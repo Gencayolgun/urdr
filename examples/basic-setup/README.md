@@ -10,7 +10,7 @@ You're building a web application called "TaskFlow" — a task management app. Y
 
 ```bash
 # Clone Urðr
-git clone https://github.com/gencay/urdr.git
+git clone https://github.com/natureco-official/urdr.git
 cd urdr
 
 # Initialize with English templates

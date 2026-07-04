@@ -56,7 +56,7 @@ Copy Urðr templates into your OpenClaw workspace:
 
 ```bash
 # Clone Urðr once
-git clone https://github.com/gencay/urdr.git ~/urdr
+git clone https://github.com/natureco-official/urdr.git ~/urdr
 
 # Init memory in OpenClaw workspace
 cd ~/.openclaw/workspace

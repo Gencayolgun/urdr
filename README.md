@@ -67,7 +67,7 @@ Target: <300 tokens per retrieval
 ### Step 1: Initialize the Memory Tree
 
 ```bash
-git clone https://github.com/gencay/urdr.git
+git clone https://github.com/natureco-official/urdr.git
 cd urdr
 
 # Creates memory/ directory with 4 root files + personality
