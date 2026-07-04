@@ -1,0 +1,106 @@
+# NatureCo CLI Plugin: Urðr Memory
+# version: 1.0.0
+# description: Tree-structured persistent memory for NatureCo CLI agents
+
+plugin:
+  name: urdr-memory
+  version: 1.0.0
+  type: memory
+  author: Gencay
+  license: MIT
+
+  description: >
+    Provides persistent, tree-structured memory (4 roots, branches, leaves)
+    for NatureCo CLI agents. Information is organized by domain (topics,
+    technical, decisions) with fast retrieval and disciplined growth rules.
+
+  hooks:
+    on_session_start:
+      - action: load_memory
+        path: "{{memory_dir}}"
+        roots:
+          - root-0-index.md
+          - root-1-topics.md
+          - root-2-technical.md
+          - root-3-decisions.md
+        personality: agent-personality.md
+        protocols:
+          - architecture.md
+          - cross-cutting.md
+
+    on_session_end:
+      - action: save_memory
+        path: "{{memory_dir}}"
+        roots:
+          - root-0-index.md
+          - root-1-topics.md
+          - root-2-technical.md
+          - root-3-decisions.md
+
+  memory:
+    roots:
+      - name: root-0
+        file: root-0-index.md
+        description: Index and routing map
+
+      - name: root-1
+        file: root-1-topics.md
+        description: People, projects, broad subjects
+
+      - name: root-2
+        file: root-2-technical.md
+        description: Systems, APIs, technical references
+
+      - name: root-3
+        file: root-3-decisions.md
+        description: Decisions, constraints, lessons learned
+
+    default_branches:
+      root-1:
+        - "## People"
+        - "## Projects"
+        - "## Organizations"
+      root-2:
+        - "## Systems"
+        - "## Languages"
+        - "## APIs"
+      root-3:
+        - "## Decision Log"
+        - "## Constraints"
+        - "## Lessons Learned"
+        - "## Pending"
+
+  commands:
+    init:
+      description: Initialize Urðr memory tree
+      usage: "natureco plugin run urdr-memory init"
+      steps:
+        - create memory directory
+        - copy templates from plugin templates/
+        - create initial branch structure
+        - update agent config
+
+    audit:
+      description: Run growth audit
+      usage: "natureco plugin run urdr-memory audit"
+      steps:
+        - count branches per root
+        - check leaf counts per branch
+        - flag overgrown branches (50+)
+        - flag roots with 9+ branches
+
+    status:
+      description: Show memory tree health
+      usage: "natureco plugin run urdr-memory status"
+      steps:
+        - show root summaries
+        - highlight growth warnings
+        - show last modified dates
+
+  protocols:
+    architecture: "{{protocol_dir}}/architecture.md"
+    cross-cutting: "{{protocol_dir}}/cross-cutting.md"
+    growth-rules: "{{protocol_dir}}/growth-rules.md"
+    hard-error: "{{protocol_dir}}/hard-error-protocol.md"
+
+  dependencies: []

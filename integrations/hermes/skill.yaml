@@ -1,0 +1,120 @@
+# Hermes Skill: Urðr Memory
+# version: 1.0.0
+# description: Tree-structured persistent memory for Hermes agents
+
+skill:
+  name: urdr-memory
+  version: 1.0.0
+  type: memory
+  author: Gencay
+  license: MIT
+
+  description: >
+    Provides persistent, tree-structured memory (4 roots, branches, leaves)
+    for Hermes agents. Organizes information by domain with fast retrieval
+    and disciplined growth rules.
+
+  triggers:
+    - "remember"
+    - "memory"
+    - "save this"
+    - "what did we do"
+    - "load memory"
+    - "session start"
+
+  memory_structure:
+    roots:
+      - id: root-0
+        file: root-0-index.md
+        purpose: "Index and routing map"
+        load: always
+
+      - id: root-1
+        file: root-1-topics.md
+        purpose: "People, projects, broad subjects"
+        load: always
+
+      - id: root-2
+        file: root-2-technical.md
+        purpose: "Systems, APIs, technical references"
+        load: always
+
+      - id: root-3
+        file: root-3-decisions.md
+        purpose: "Decisions, constraints, lessons learned"
+        load: always
+
+    personality:
+      file: agent-personality.md
+      purpose: "Agent identity and character"
+      load: always
+
+    protocols:
+      - file: architecture.md
+        purpose: "Tree structure specification"
+        load: on_demand
+      - file: cross-cutting.md
+        purpose: "Cross-domain placement rules"
+        load: on_demand
+      - file: growth-rules.md
+        purpose: "When and how to grow/split"
+        load: on_demand
+      - file: hard-error-protocol.md
+        purpose: "Error recovery procedures"
+        load: on_demand
+
+  operations:
+    write:
+      description: "Write information to memory"
+      steps:
+        - "Identify subject → select root"
+        - "Find or create branch (## heading)"
+        - "Check cross-cutting → single primary + bkz:"
+        - "Write dated leaf: **DD.MM.YYYY — Event — Outcome**"
+
+    read:
+      description: "Read information from memory"
+      steps:
+        - "Identify subject"
+        - "Select root"
+        - "Pick branch"
+        - "Read leaf"
+      fallback: "grep across all roots"
+
+    audit:
+      description: "Check memory health"
+      steps:
+        - "Count branches per root"
+        - "Check branch leaf counts"
+        - "Verify cross-references"
+        - "Flag stale entries"
+
+  session_protocol:
+    start:
+      - "Read root-0 (index)"
+      - "Read root-3 / Pending"
+      - "Read agent-personality.md"
+      - "Read architecture.md (first session only)"
+
+    end:
+      - "Review session changes"
+      - "Update relevant roots/branches"
+      - "Add dated entries for key decisions"
+      - "Flag growth warnings"
+
+  cross_cutting:
+    rule: "Single primary, multiple bkz:"
+    primary_selection:
+      - "How? → Root-2 (Technical)"
+      - "What? → Root-1 (Topics)"
+      - "Why? → Root-3 (Decisions)"
+    reference_format: "bkz: <root>/<branch>"
+
+  maintenance:
+    audit_frequency: "weekly"
+    split_branch_at: 50
+    split_root_at: 9
+    stale_threshold_months: 6
+    backup:
+      frequency: "daily"
+      method: "git commit"
