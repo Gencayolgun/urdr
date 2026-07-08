@@ -18,6 +18,10 @@
 
 set -euo pipefail
 
+# DEPRECATED (bash-only — does not run on stock Windows). Use the cross-platform,
+# feature-complete Node successor instead:  node scripts/lint.mjs [memory-dir]
+echo "⚠️  check-growth.sh is deprecated — use: node scripts/lint.mjs" >&2
+
 # ── Configuration ──────────────────────────────────────────────────
 MEMORY_DIR="${1:-.}"
 VERBOSE=false

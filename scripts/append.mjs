@@ -31,6 +31,14 @@ import { fileURLToPath } from 'node:url';
 
 function escapeRegex(s) { return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
 
+// CPU-friendly synchronous sleep: Atomics.wait parks the thread instead of busy-spinning,
+// so heavy parallel writers (dozens of channels) don't burn a core while backing off.
+// Falls back to a spin only if SharedArrayBuffer is unavailable (locked-down runtimes).
+function sleepSync(ms) {
+  try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); }
+  catch { const until = Date.now() + ms; while (Date.now() < until) { /* fallback */ } }
+}
+
 /**
  * Acquire an advisory lock via atomic mkdir. Retries with backoff up to timeoutMs.
  * Steals a lock older than staleMs (a crashed writer shouldn't wedge the tree forever).
@@ -50,9 +58,10 @@ function acquireLock(lockDir, { timeoutMs = 5000, staleMs = 30000 } = {}) {
         if (age > staleMs) { try { fs.rmSync(lockDir, { recursive: true, force: true }); } catch {} continue; }
       } catch {}
       if (Date.now() - start > timeoutMs) throw new Error('lock timeout: ' + lockDir);
-      // tiny synchronous backoff (busy-wait a few ms; appends are sub-ms so this is rare)
-      const until = Date.now() + 15;
-      while (Date.now() < until) { /* spin */ }
+      // Jittered CPU-friendly backoff (5–20 ms). Jitter avoids a thundering herd when
+      // many writers wake at once; sleepSync avoids burning a core. Appends are sub-ms,
+      // so contention is rare regardless.
+      sleepSync(5 + Math.floor(Math.random() * 15));
     }
   }
 }

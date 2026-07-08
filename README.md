@@ -153,7 +153,7 @@ urdr/
 │
 ├── scripts/                # Utility scripts (cross-platform)
 │   ├── init.sh             # Initialize memory tree
-│   ├── check-growth.sh     # Audit branch health
+│   ├── check-growth.sh     # DEPRECATED → use lint.mjs (bash-only, no Windows)
 │   ├── migrate.sh          # Restructure branches
 │   ├── search.mjs          # Last-resort branch-aware search (Node, LLM-free)
 │   ├── bench.mjs           # Retrieval/fidelity benchmark (Node, LLM-free)
