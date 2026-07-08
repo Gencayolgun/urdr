@@ -81,9 +81,16 @@ When you have an Urðr memory tree, you are expected to:
 2. Select the root (domain mapping)
 3. Pick the branch (scan ## headings)
 4. Read the leaf (specific entry)
-
-If path is unknown → use grep/rg to search across roots
+5. FALLBACK — if steps 1-4 come up empty, DO NOT report "not found" yet.
+   Run the safety net (branch-aware, LLM-free, cross-platform):
+     node scripts/search.mjs "<keyword>" <memory-dir>
+   Only if THIS also returns nothing was the info never saved.
 ```
+
+> **Never conclude "I don't remember" from a failed hierarchy guess alone.** The
+> information may be filed under a root you didn't expect. Step 5 is what turns retrieval
+> from a *guess* into a *guarantee*. Use `scripts/search.mjs` (works on Windows too — plain
+> `grep`/`rg` do not exist on stock Windows).
 
 ### Priority Order for "Most Executable Root"
 
@@ -178,9 +185,15 @@ This file should be loaded at session start alongside memory roots. It gives the
 
 ### What If the Agent Can't Find Something?
 
-1. Use grep across all roots: `rg "keyword" ~/.config/opencode/memory/`
+1. Run the safety net: `node scripts/search.mjs "keyword" <memory-dir>`
+   (branch-aware, LLM-free, works on macOS/Windows/Linux)
 2. Check root-0 index for correct routing
-3. If it truly doesn't exist → it wasn't saved. Add it now.
+3. If `search.mjs` ALSO finds nothing → it truly wasn't saved. Add it now.
+
+> Verify at scale before trusting the tree with production memory:
+> `node scripts/bench.mjs --leaves 300 --ambiguity 0.3` — measures recall with and
+> without the fallback, plus write fidelity. If hierarchy-only recall is low, that's your
+> signal to lean on step-5 search (or split overgrown roots).
 
 ---
 

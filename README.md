@@ -140,16 +140,18 @@ urdr/
 │   └── hard-error-protocol.md # Error recovery
 │
 ├── integrations/           # Platform-specific adapters
-    │   ├── opencode/SKILL.md
-    │   ├── claude-code/CLAUDE.md
-    │   ├── openclaw/README.md
-    │   ├── natureco/plugin.yaml
-    │   └── hermes/skill.yaml
+│   ├── opencode/SKILL.md
+│   ├── claude-code/CLAUDE.md
+│   ├── openclaw/README.md
+│   ├── natureco/plugin.yaml
+│   └── hermes/skill.yaml
 │
-├── scripts/                # Utility scripts
+├── scripts/                # Utility scripts (cross-platform)
 │   ├── init.sh             # Initialize memory tree
 │   ├── check-growth.sh     # Audit branch health
-│   └── migrate.sh          # Restructure branches
+│   ├── migrate.sh          # Restructure branches
+│   ├── search.mjs          # Last-resort branch-aware search (Node, LLM-free)
+│   └── bench.mjs           # Retrieval/fidelity benchmark (Node, LLM-free)
 │
 └── examples/               # Practical use cases
     ├── basic-setup/
@@ -186,6 +188,44 @@ Handles information that naturally belongs to multiple roots. Uses the **"Single
 Disciplined rules for when to add branches, split overgrown ones, or create new roots. Prevents the "junk drawer" problem.
 
 ---
+
+## Retrieval Safety Net (`scripts/search.mjs`)
+
+The 4-step hierarchy is the **primary** path — fast and cheap. But category-guessing has a failure mode: if the agent looks in the wrong root, information that *is* stored reads as "not found" — which, to a user, is indistinguishable from forgetting.
+
+Urðr ships a **last-resort search** that closes this gap without touching the architecture's elegance:
+
+```bash
+# When the 4-step protocol comes up empty, scan everything (branch-aware):
+node scripts/search.mjs "sqlite" ./my-memory
+# → root-2-technical.md › ## APIs › **04.07.2026 — chose SQLite for local storage**
+```
+
+- **LLM-free** — pure keyword/regex scan; zero token cost, ~0.2–0.6 ms/query.
+- **Cross-platform** — pure Node.js. No `grep`/`rg`/`awk` dependency (those don't exist on stock Windows). `ripgrep` is used only as an optional accelerator on very large trees.
+- **Branch-aware** — every hit reports `file › ## branch › leaf`, so the agent still gets structured context.
+- **Composable** — exits `0` on hit / `1` on miss (grep convention), or `--json` for programmatic use.
+
+This makes retrieval a *guarantee*, not a *guess*: hierarchy first, full scan as the net beneath it.
+
+## Benchmark (`scripts/bench.mjs`)
+
+"Unlimited memory" is a claim until you measure it. `bench.mjs` builds a synthetic tree with a controllable share of **ambiguous** leaves (filed under one root, but naturally queried as another — the exact case where category-guessing fails) and reports real numbers:
+
+```bash
+node scripts/bench.mjs --leaves 300 --ambiguity 0.3
+```
+
+```
+  Write fidelity (stored == intended): 100.0%  ✓
+  recall@1, hierarchy-only        : 73.3%   ← fails on wrong-root guesses
+  recall@1, hierarchy + fallback  : 100.0%  ← safety net
+  rescued by fallback             : 80 leaves (26.7%)
+  avg retrieval latency           : 0.2 ms/query (CPU, no LLM call)
+  → Fallback lifted recall from 73.3% to 100.0% with zero LLM cost.
+```
+
+Identical results on macOS, Windows, and Linux (deterministic seed). Use it to prove the architecture works at volume — and to catch the growth bottleneck *before* production, not months later when users ask "why doesn't it remember?"
 
 ## Design Philosophy
 
