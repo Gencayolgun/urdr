@@ -297,3 +297,7 @@ Her sisters:
 - **Skuld** — the future (what shall be)
 
 Together they water Yggdrasil's roots from the Well of Urðr, keeping the tree alive. 🌳
+
+---
+
+<sub>Part of the **NatureCo** ecosystem — [natureco.me](https://natureco.me) · NatureCo ekosisteminin parçası</sub>
