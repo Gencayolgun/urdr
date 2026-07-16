@@ -31,3 +31,33 @@ Diğer kabul edilen, plana işlenen düzeltmeler (özet — detaylar PLAN v2'de)
 **REDDEDİLEN:** Yok — bulguların hepsi teknik olarak haklıydı.
 
 PLAN.md v2'ye işlendi (Rock 0 yeni eklendi, Rock 7 kademeli alt-adımlara bölündü, tüm diğer rock'lar spesifik düzeltmelerle güncellendi).
+
+## Round 2
+
+### Integrator findings (Codex, verbatim)
+(19 bulgu, neredeyse tamamı BLOCKING — özet: yürütme sırası hâlâ açık değildi, Rock 0 "transaction layer" içermiyordu ama Rock 2 ona bağımlıydı, event-log otoritesi ile serbest Markdown düzenleme arasındaki gerilim çözülmemişti, "proper-lockfile" örneği reddedilen heartbeat sorununu geri getiriyordu, regex zaman sınırı aynı thread'de işe yaramaz, `--lang both` hâlâ belirsizdi, provenance/forgetting/auto-split detayları eksikti.)
+
+### Visionary response (Fable)
+
+TÜMÜ kabul edildi, kesin kararlar verildi:
+
+1. **KABUL — Açık yürütme sırası:** `0 → 1 → 6A → 2/3/4 → 6B → 5 → 6C → 6D`. 6A (şema + stable-ID + TRANSACTION API) artık Rock 2/3'ten ÖNCE, çünkü ikisi de ona bağımlı.
+2. **KABUL — Transaction primitive'i 6A'ya taşındı**, Rock 0 sadece parser kalıyor.
+3. **KARAR — Event-log otoritesi vs serbest Markdown düzenleme:** Markdown dosyaları DOĞRUDAN düzenlenebilir kalıyor (projenin temel değer önerisi bu). 6A'ya "reconciliation import" komutu eklendi: son event-log checkpoint'inden beri yapılan doğrudan düzenlemeleri diff'leyip yeni event'lere çevirir, eşzamanlı çakışmayı (aynı leaf hem event-log hem doğrudan düzenlenmiş) tespit edip kullanıcıya sorar. Bidirectional ama "otomatik sessiz senkron" değil, "tespit et + sor" modeli.
+4. **KABUL — Round-trippable stable ID'ler**, HTML yorumu içinde (`<!-- id:abc123 -->`), eski araçlar görmezden gelir.
+5. **KARAR — Manifest atomikliği SADECE event-log-farkında okuyucular için** — mevcut ajanlar (Claude Code vb.) doğrudan `root-*.md` dosyalarını okuduğu için TAM çoklu-dosya atomikliği bu okuyucular için garanti EDİLEMEZ, bu açıkça dokümante edilen bir sınırlama olarak kabul edildi (yeniden tasarlamak yerine).
+6. **KABUL — Phase B artık append/migrate/compiler/init'in HEPSİNİ event-log-farkında yazıcı yapıyor**, sadece lint/search değil.
+7. **KARAR — Kilit mekanizması: GERÇEK OS-seviyeli kilit (flock-benzeri native binding) VEYA bağımsız zamanlanmış bir lease-keeper ALT-PROCESS** — "proper-lockfile" örneği KALDIRILDI (varsayılan renewal mekanizması reddedilen heartbeat'le aynı sorunu taşıyor).
+8. **KARAR — `--lang both` TAMAMEN KALDIRILDI.** Tek ağaç, tek isimlendirme dili. En basit tasarım.
+9. **KABUL — Regex güvenliği: ayrı, sonlandırılabilir bir worker/subprocess'te çalıştırılıyor** (aynı-thread timeout işe yaramıyor) VEYA RE2-tarzı sınırlı motor.
+10. **KABUL — Telemetri varsayılan olarak sorgu-türevi değer SAKLAMIYOR** (sadece agregate sayaçlar); sorgu-özel veri gerekiyorsa açık, anahtarlı ve rotate edilen pseudonymization.
+11. **KABUL — Forgetting'in silme sınırı TÜM türevleri kapsıyor** (backup, eski generation'lar, telemetri, temp dosyalar, hash-chain checkpoint'leri).
+12. **KABUL — Auto branch-splitting (madde 25) compiler gereksinimlerine geri eklendi** (deterministic clustering + evidence/confidence + golden fixture + onay-sonrası uygulama).
+13. **KABUL — Provenance şeması açıkça listelendi:** creator, timestamp, source, confidence, verification state, verifier, validity interval.
+14. **KABUL — MCP proof artık her tool'u (search/append/lint/compiler/forgetting) test client üzerinden GERÇEKTEN çağırıyor**, sadece handshake değil, negative security case'ler dahil.
+15. **CLARIFY çözümü — Hermes/NatureCo lazy-loading:** Yeni bir şema İCAT EDİLMİYOR — build sırasında `integrations/hermes/skill.yaml` ve `integrations/natureco/plugin.yaml`'ın MEVCUT şeması okunup o şemanın İZİN VERDİĞİ ölçüde on-demand yükleme uygulanıyor (execution-detail, Codex build sırasında karar verir).
+16. **KABUL — Platform-özel metadata garantileri** (mode/ACL) ayrı ayrı tanımlanıyor, tek bir "portable" iddia yok. **KABUL — Fault-injection noktaları** açıkça listelendi: fsync öncesi, rename öncesi, rename sonrası, dizin-fsync öncesi, manifest-pointer yayını sırasında.
+
+**REDDEDİLEN:** Yok.
+
+PLAN.md v3'e işlendi.
