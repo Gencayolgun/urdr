@@ -20,37 +20,24 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { listRootFiles, parseMarkdown } from './lib/markdown-model.mjs';
 
 // Urðr `root-N-*`/`kök-N-*` AND platform-native `N-name` roots (e.g. NatureCo `1-kisisel.md`).
-const ROOT_FILE_RE = /^(?:(?:root|kök|kok)-)?\d[-_].*\.md$/i;
 const MAX_BRANCHES = 9;
 const WARN_LEAVES = 30;
 const MAX_LEAVES = 50;
 const DUP_THRESHOLD = 0.85;
 const INDEX_LEAF_WARN = 15; // an index with this many leaf-like lines is storing, not mapping
 
-function listRootFiles(dir) {
-  try {
-    return fs.readdirSync(dir, { withFileTypes: true })
-      .filter((e) => e.isFile() && ROOT_FILE_RE.test(e.name))
-      .map((e) => path.join(dir, e.name)).sort();
-  } catch { return []; }
-}
-
 /** Parse a root file into { file, isIndex, branches: [{name, leaves:[{text,line}]}] }. */
 function parseFile(file) {
   const name = path.basename(file);
   const isIndex = /-0-/.test(name) || /index|indeks/i.test(name);
-  const lines = fs.readFileSync(file, 'utf8').split(/\r?\n/);
-  const branches = [];
-  let cur = null;
-  for (let i = 0; i < lines.length; i++) {
-    const h = lines[i].match(/^##\s+(.+?)\s*$/);
-    if (h) { cur = { name: h[1], leaves: [] }; branches.push(cur); continue; }
-    const t = lines[i].trim();
-    if (!t || t.startsWith('<!--') || t.startsWith('#') || t === '---' || /^_no entries yet\._$/i.test(t) || t.startsWith('>')) continue;
-    if (cur) cur.leaves.push({ text: t, line: i + 1 });
-  }
+  const model = parseMarkdown(fs.readFileSync(file, 'utf8'));
+  const branches = model.branches.map((branch) => ({
+    name: branch.name,
+    leaves: branch.leaves.map((leaf) => ({ text: leaf.text, line: leaf.startLine })),
+  }));
   return { file: name, isIndex, branches };
 }
 

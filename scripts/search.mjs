@@ -27,22 +27,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { listRootFiles, parseMarkdown } from './lib/markdown-model.mjs';
 
-// Matches Urðr's `root-N-*` / `kök-N-*` AND platform-native `N-name` roots
-// (e.g. NatureCo ships `0-index.md`, `1-kisisel.md`, `2-teknik.md`). Single-digit
-// root index (0-9) + separator avoids matching stray files like `2024-report.md`.
-const ROOT_FILE_RE = /^(?:(?:root|kök|kok)-)?\d[-_].*\.md$/i;
-
-/** List all root memory files in a directory (root-*.md + Turkish kök-*.md). */
-export function listRootFiles(memoryDir) {
-  let entries;
-  try { entries = fs.readdirSync(memoryDir, { withFileTypes: true }); }
-  catch { return []; }
-  return entries
-    .filter((e) => e.isFile() && ROOT_FILE_RE.test(e.name))
-    .map((e) => path.join(memoryDir, e.name))
-    .sort();
-}
+export { listRootFiles } from './lib/markdown-model.mjs';
 
 /** Is ripgrep available? (optional accelerator only) */
 function hasRipgrep() {
@@ -67,18 +54,12 @@ function scanFile(file, matcher, out, maxResults) {
   let content;
   try { content = fs.readFileSync(file, 'utf8'); }
   catch { return; }
-  const lines = content.split(/\r?\n/);
-  let branch = '(root)';
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    const h = line.match(/^##\s+(.+?)\s*$/);
-    if (h) { branch = h[1]; continue; }
-    // skip structural noise: blank, HTML comments, placeholders, hr, top heading
-    const t = line.trim();
-    if (!t || t.startsWith('<!--') || t.startsWith('#') || t === '---' || /^_no entries yet\._$/i.test(t)) continue;
+  const model = parseMarkdown(content);
+  for (const leaf of model.leaves) {
     matcher.lastIndex = 0;
-    if (matcher.test(line)) {
-      out.push({ file: path.basename(file), branch, line: i + 1, text: t.slice(0, 300) });
+    if (matcher.test(leaf.text)) {
+      const text = leaf.text.replace(/\s*\n\s*/g, ' ').slice(0, 300);
+      out.push({ file: path.basename(file), branch: leaf.branch || '(root)', line: leaf.startLine, text });
       if (out.length >= maxResults) return;
     }
   }

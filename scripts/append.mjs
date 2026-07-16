@@ -2,139 +2,163 @@
 /**
  * append.mjs — Urðr safe concurrent leaf writer (cross-platform, LLM-free)
  *
- * Urðr stores memory as Markdown, and agents are expected to write leaves into it. But
- * the moment more than one writer exists — e.g. NatureCo runs 8 messaging channels
- * (WhatsApp, Telegram, Signal, IRC, Mattermost, iMessage, SMS + terminal) all writing to
- * the SAME shared memory — naive "read file, rewrite file" loses data: two writers read
- * the same version, both append, the second `writeFile` clobbers the first. That's silent
- * memory loss.
+ * A separate lease-keeper process renews the lock while this synchronous writer works.
+ * Writes use fsync + atomic replacement. Linux/macOS also fsync the parent directory;
+ * Windows uses MoveFileExW WRITE_THROUGH because Windows rejects directory fsync.
  *
- * This tool makes a leaf-append atomic and serialized:
- *   1. Acquire an advisory lock (atomic `mkdir` — the one cross-platform primitive that
- *      is guaranteed atomic on every OS + filesystem).
- *   2. Read the CURRENT file (never a stale copy held across the write).
- *   3. Insert the leaf under its `## branch` (replacing the "_No entries yet._" placeholder,
- *      otherwise after the last existing leaf) — append-only, never overwrites siblings.
- *   4. Write via temp-file + atomic rename (a partially written file is never observable).
- *   5. Release the lock.
+ * Replacement metadata is platform-specific: Linux/macOS copy POSIX permission bits but
+ * not ownership, ACLs, xattrs, security labels, or resource forks. Windows replacements
+ * inherit directory ACLs; the prior file ACL and DOS attributes are not preserved.
  *
  * Usage:
  *   node append.mjs <memory-dir> <root-file> "<branch>" "<leaf text>"
- *   node append.mjs ./mem root-2-technical.md "APIs" "**04.07.2026 — chose SQLite — ok**"
- *
- * As a module:  import { appendLeaf } from './append.mjs';
  */
 
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
+import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { findBranch, hasHeadingNodes, parseMarkdown } from './lib/markdown-model.mjs';
+import { acquireLeaseLock, assertLeaseOwned, releaseLeaseLock } from './lib/lock.mjs';
 
-function escapeRegex(s) { return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+export const FILE_METADATA_GUARANTEES = Object.freeze({
+  linux: 'POSIX permission bits are copied; ownership, ACLs, xattrs, and security labels are not preserved.',
+  darwin: 'POSIX permission bits are copied; ownership, ACLs, extended attributes, and resource forks are not preserved.',
+  win32: 'The replacement inherits ACLs from the directory; the prior file ACL and DOS attributes are not preserved.',
+});
 
-// CPU-friendly synchronous sleep: Atomics.wait parks the thread instead of busy-spinning,
-// so heavy parallel writers (dozens of channels) don't burn a core while backing off.
-// Falls back to a spin only if SharedArrayBuffer is unavailable (locked-down runtimes).
-function sleepSync(ms) {
-  try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); }
-  catch { const until = Date.now() + ms; while (Date.now() < until) { /* fallback */ } }
+function injectFault(opts, stage) {
+  if (opts.faultAt === stage) throw new Error(`fault injection: ${stage}`);
+  if (opts.faultInjector) opts.faultInjector(stage);
 }
 
-/**
- * Acquire an advisory lock via atomic mkdir. Retries with backoff up to timeoutMs.
- * Steals a lock older than staleMs (a crashed writer shouldn't wedge the tree forever).
- */
-function acquireLock(lockDir, { timeoutMs = 5000, staleMs = 30000 } = {}) {
-  const start = Date.now();
-  for (;;) {
-    try {
-      fs.mkdirSync(lockDir); // atomic: throws EEXIST if held
-      try { fs.writeFileSync(path.join(lockDir, 'pid'), String(process.pid)); } catch {}
-      return;
-    } catch (e) {
-      if (e.code !== 'EEXIST') throw e;
-      // steal if stale
-      try {
-        const age = Date.now() - fs.statSync(lockDir).mtimeMs;
-        if (age > staleMs) { try { fs.rmSync(lockDir, { recursive: true, force: true }); } catch {} continue; }
-      } catch {}
-      if (Date.now() - start > timeoutMs) throw new Error('lock timeout: ' + lockDir);
-      // Jittered CPU-friendly backoff (5–20 ms). Jitter avoids a thundering herd when
-      // many writers wake at once; sleepSync avoids burning a core. Appends are sub-ms,
-      // so contention is rare regardless.
-      sleepSync(5 + Math.floor(Math.random() * 15));
-    }
-  }
+function isWithin(base, target) {
+  const relative = path.relative(base, target);
+  return relative !== '' && relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
 }
 
-function releaseLock(lockDir) {
-  try { fs.rmSync(lockDir, { recursive: true, force: true }); } catch {}
+export function resolveConfinedTarget(memoryDir, rootFile) {
+  if (!rootFile || path.isAbsolute(rootFile)) throw new Error('root file must be a relative path beneath memory directory');
+  if (String(rootFile).split(/[\\/]+/).includes('..')) throw new Error('root file path traversal is not allowed');
+
+  const memory = fs.realpathSync(path.resolve(memoryDir));
+  const candidate = path.resolve(memory, rootFile);
+  const parent = fs.realpathSync(path.dirname(candidate));
+  const target = fs.realpathSync(candidate);
+  if (!isWithin(memory, parent) && parent !== memory) throw new Error('root file parent escapes memory directory');
+  if (!isWithin(memory, target)) throw new Error('root file escapes memory directory');
+  return { memory, parent, target };
 }
 
-/**
- * Pure insert: return new file content with `leafText` added under `## branch`.
- * Replaces a "_No entries yet._" placeholder if present; otherwise inserts after the
- * last leaf in that branch, before the branch-ending `---`/next `##`. Never touches
- * other branches. Throws if the branch heading is missing.
- */
-export function insertLeaf(content, branch, leafText) {
-  const lines = content.split(/\r?\n/);
-  const bre = new RegExp('^##\\s+' + escapeRegex(branch) + '\\s*$', 'i');
-  const bi = lines.findIndex((l) => bre.test(l));
-  if (bi < 0) throw new Error(`branch not found: "## ${branch}"`);
-
-  // branch region = (bi, end) where end is the next "## " or EOF
-  let end = lines.length;
-  for (let i = bi + 1; i < lines.length; i++) {
-    if (/^##\s+/.test(lines[i])) { end = i; break; }
+function windowsDurableRename(from, to) {
+  const source = `
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+public static class UrdrMove {
+  [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+  [return: MarshalAs(UnmanagedType.Bool)]
+  static extern bool MoveFileEx(string from, string to, uint flags);
+  public static void Run(string from, string to) {
+    if (!MoveFileEx(from, to, 0x1 | 0x8)) throw new Win32Exception(Marshal.GetLastWin32Error());
   }
-
-  // placeholder? replace it in place
-  for (let i = bi + 1; i < end; i++) {
-    if (/^_no entries yet\._$/i.test(lines[i].trim())) {
-      lines[i] = leafText;
-      return lines.join('\n');
-    }
-  }
-
-  // otherwise insert after the last real content line in the region (skip blanks/---/comments)
-  let insertAt = bi + 1;
-  for (let i = bi + 1; i < end; i++) {
-    const t = lines[i].trim();
-    if (t && t !== '---' && !t.startsWith('<!--')) insertAt = i + 1;
-  }
-  lines.splice(insertAt, 0, leafText);
-  return lines.join('\n');
+}`;
+  const command = `Add-Type -TypeDefinition @'\n${source}\n'@; [UrdrMove]::Run($env:URDR_MOVE_FROM, $env:URDR_MOVE_TO)`;
+  const encoded = Buffer.from(command, 'utf16le').toString('base64');
+  const result = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', encoded], {
+    encoding: 'utf8',
+    windowsHide: true,
+    env: { ...process.env, URDR_MOVE_FROM: from, URDR_MOVE_TO: to },
+  });
+  if (result.status !== 0) throw new Error(`durable rename failed: ${(result.stderr || result.stdout || '').trim()}`);
 }
 
-/**
- * Concurrency-safe append of one leaf. Serialized by an advisory lock, written atomically.
- * Returns { file, branch, bytes }.
- */
-export function appendLeaf(memoryDir, rootFile, branch, leafText, opts = {}) {
-  if (!leafText || !leafText.trim()) throw new Error('empty leaf text');
-  const target = path.join(memoryDir, rootFile);
-  const lockDir = target + '.lock';
-  acquireLock(lockDir, opts);
+function durableRename(from, to) {
+  if (process.platform === 'win32') windowsDurableRename(from, to);
+  else fs.renameSync(from, to);
+}
+
+function fsyncDirectory(directory) {
+  if (process.platform === 'win32') return;
+  const fd = fs.openSync(directory, 'r');
+  try { fs.fsyncSync(fd); }
+  finally { fs.closeSync(fd); }
+}
+
+function atomicReplace(target, content, lock, opts) {
+  const stat = fs.statSync(target);
+  const tmp = path.join(path.dirname(target), `.${path.basename(target)}.tmp-${process.pid}-${crypto.randomUUID()}`);
+  let fd;
+  let renamed = false;
   try {
-    const content = fs.readFileSync(target, 'utf8'); // CURRENT content, inside the lock
+    fd = fs.openSync(tmp, fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY, stat.mode);
+    fs.writeFileSync(fd, content, 'utf8');
+    if (process.platform !== 'win32') fs.fchmodSync(fd, stat.mode & 0o7777);
+    injectFault(opts, 'before-fsync');
+    fs.fsyncSync(fd);
+    fs.closeSync(fd);
+    fd = undefined;
+
+    assertLeaseOwned(lock);
+    injectFault(opts, 'before-rename');
+    durableRename(tmp, target);
+    renamed = true;
+    injectFault(opts, 'after-rename');
+    assertLeaseOwned(lock);
+    injectFault(opts, 'before-directory-fsync');
+    fsyncDirectory(path.dirname(target));
+  } finally {
+    if (fd !== undefined) try { fs.closeSync(fd); } catch {}
+    if (!renamed) try { fs.rmSync(tmp, { force: true }); } catch {}
+  }
+}
+
+/** Return new content with one leaf inserted under the named canonical `##` branch. */
+export function insertLeaf(content, branchName, leafText) {
+  if (!leafText || !String(leafText).trim()) throw new Error('empty leaf text');
+  if (hasHeadingNodes(leafText)) throw new Error('leaf text contains a Markdown heading');
+
+  const model = parseMarkdown(content);
+  const branch = findBranch(model, branchName);
+  if (!branch) throw new Error(`branch not found: "## ${branchName}"`);
+  const lines = [...model.lines];
+  const leafLines = String(leafText).split(/\r?\n/);
+
+  if (branch.placeholders.length > 0) {
+    lines.splice(branch.placeholders[0].startLine - 1, 1, ...leafLines);
+    return lines.join(model.newline);
+  }
+
+  if (branch.leaves.length > 0) {
+    const last = branch.leaves[branch.leaves.length - 1];
+    lines.splice(last.endLine, 0, '', ...leafLines);
+  } else {
+    lines.splice(branch.heading.endLine, 0, '', ...leafLines);
+  }
+  return lines.join(model.newline);
+}
+
+/** Concurrency-safe append of one leaf. Returns { file, branch, bytes }. */
+export function appendLeaf(memoryDir, rootFile, branch, leafText, opts = {}) {
+  if (!leafText || !String(leafText).trim()) throw new Error('empty leaf text');
+  if (hasHeadingNodes(leafText)) throw new Error('leaf text contains a Markdown heading');
+  const { target } = resolveConfinedTarget(memoryDir, rootFile);
+  const lock = acquireLeaseLock(`${target}.lock`, opts);
+  try {
+    assertLeaseOwned(lock);
+    const content = fs.readFileSync(target, 'utf8');
     const next = insertLeaf(content, branch, leafText);
-    const tmp = target + '.tmp-' + process.pid + '-' + Date.now();
-    fs.writeFileSync(tmp, next, 'utf8');
-    fs.renameSync(tmp, target); // atomic replace
+    atomicReplace(target, next, lock, opts);
     return { file: rootFile, branch, bytes: Buffer.byteLength(next) };
   } finally {
-    releaseLock(lockDir);
+    releaseLeaseLock(lock);
   }
 }
 
-// ── CLI ────────────────────────────────────────────────────────────
-// realpathSync resolves symlinks — essential because macOS /tmp → /private/tmp, so
-// import.meta.url and argv[1] can differ by symlink alone and a plain string compare
-// (even with fileURLToPath) silently fails to detect "run as CLI".
 function isMain() {
-  try {
-    return fs.realpathSync(fileURLToPath(import.meta.url)) === fs.realpathSync(process.argv[1] || '.');
-  } catch { return false; }
+  try { return fs.realpathSync(fileURLToPath(import.meta.url)) === fs.realpathSync(process.argv[1] || '.'); }
+  catch { return false; }
 }
 
 if (isMain()) {
@@ -145,10 +169,10 @@ if (isMain()) {
     process.exit(2);
   }
   try {
-    const r = appendLeaf(memoryDir, rootFile, branch, leafText);
-    console.log(`✓ appended to ${r.file} › ## ${r.branch} (${r.bytes} bytes)`);
-  } catch (e) {
-    console.error('✗ ' + e.message);
+    const result = appendLeaf(memoryDir, rootFile, branch, leafText);
+    console.log(`✓ appended to ${result.file} › ## ${result.branch} (${result.bytes} bytes)`);
+  } catch (error) {
+    console.error('✗ ' + error.message);
     process.exit(1);
   }
 }
