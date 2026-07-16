@@ -13,7 +13,10 @@ Rock 6A (event-log şeması + stable-ID + TRANSACTION API) Rock 2/3'ten ÖNCE ge
 ---
 
 ## Rock 0 — Paylaşılan Markdown parser modülü
-(değişmedi — bkz. v2. `scripts/lib/markdown-model.mjs`: çok satırlı yorum, gerçek leaf sınırı, EN+TR placeholder, sadece gerçek heading node'ları tanıma.)
+
+**Değişen karar (round 3):** Yorum işleme artık İKİ TÜRÜ ayırt ediyor — "Urðr metadata yorumu" (`<!-- urdr:id:... -->` gibi tanınan bir prefix'le başlayan, PARSE EDİLİP round-trip kimliği için Rock 6A'ya aktarılan) vs "sıradan yorum" (prose, yok sayılıyor). Böylece Rock 6A'nın kimlik yorumları parser tarafından asla silinmiyor.
+(Diğer kısımlar değişmedi — çok satırlı yorum bloğu doğru atlanıyor, gerçek leaf sınırı, EN+TR placeholder, sadece gerçek heading node'ları tanıma.)
+**Dosyalar:** YENİ `scripts/lib/markdown-model.mjs`
 
 ## Rock 1 — Concurrency & durability
 
@@ -23,16 +26,18 @@ Platform-özel metadata garantileri (mode/ACL) ayrı ayrı tanımlanıyor (tek "
 (Diğer kısımlar değişmedi — realpath confinement, parser-farkında header-injection reddi.)
 **Dosyalar:** `scripts/append.mjs`, YENİ `scripts/lib/lock.mjs`
 
-## Rock 6A — Event-log şeması + stable-ID + transaction API (ÖNE ALINDI)
+## Rock 6A — Event-log şeması + stable-ID + transaction API (ÖNE ALINDI, round 3 ile tamamlandı)
 
 **Done looks like:**
 - `.urdr/events.jsonl`: kanonik serialization, hash-chaining, commit record'ları, kesilme kurtarma, fsync davranışı.
-- Şema versiyonlama + idempotent Markdown import (round-trippable stable ID'ler, HTML yorumu içinde `<!-- id:abc123 -->`, eski araçlar görmezden gelir) — duplicate/reorder/edit/export/re-import senaryoları test edilir.
-- **Reconciliation import komutu:** son checkpoint'ten beri yapılan doğrudan Markdown düzenlemelerini diff'leyip yeni event'lere çevirir; aynı leaf hem event-log hem doğrudan düzenlenmişse ÇAKIŞMA olarak işaretler, kullanıcıya sorar (sessiz otomatik senkron YOK). Markdown dosyaları DOĞRUDAN düzenlenebilir kalır — bu projenin temel değer önerisi.
+- Şema versiyonlama + idempotent Markdown import (round-trippable stable ID'ler, HTML yorumu içinde `<!-- urdr:id:abc123 -->` — Rock 0'ın parser'ı bu prefix'i "Urðr metadata yorumu" olarak tanıyıp KORUYOR, sıradan yorumlardan ayırıyor, bkz. Rock 0) — duplicate/reorder/edit/export/re-import senaryoları test edilir.
+- **`bkz:` kenar şeması:** referanslar artık stable-ID'ye işaret eden yapılandırılmış kenarlar olarak saklanıyor (Markdown'da hâlâ okunabilir `bkz:` metni görünür, altında ID-tabanlı kenar var); legacy serbest-metin referansların ID-tabanlı kenara migration'ı test ediliyor.
+- **Reconciliation import komutu:** son checkpoint'ten beri yapılan doğrudan Markdown düzenlemelerini diff'leyip yeni event'lere çevirir; aynı leaf hem event-log hem doğrudan düzenlenmişse ÇAKIŞMA olarak işaretler, kullanıcıya sorar (sessiz otomatik senkron YOK). Markdown dosyaları DOĞRUDAN düzenlenebilir kalır.
+- **Dirty-view gate:** publish öncesi mevcut view'ın son checkpoint'ten beri değiştiği kontrol ediliyor; değiştiyse reconciliation TAMAMLANMADAN publish REDDEDİLİYOR, üzerine yazılacak versiyon için kurtarma kopyası tutuluyor. Bir transaction publish'i SIRASINDA eşzamanlı yönetilmeyen düzenleme AÇIKÇA DESTEKLENMİYOR (dokümante edilen sınırlama).
 - **Atomik çoklu-işlem transaction API'si** (`beginTransaction()`/`commit()`/`abort()` tarzı): cross-cutting'in "primary + birkaç bkz:" gereksinimi bunun üzerinden TEK transaction olarak yazılır.
-- Çoklu-dosya yayın: manifest/pointer-swap ile atomik hale getirilir — **AMA bu atomiklik SADECE event-log-farkında okuyucular için garanti edilir.** Mevcut ajanlar (Claude Code vb.) doğrudan `root-*.md` okuduğu için TAM çoklu-dosya atomikliği onlar için garanti EDİLEMEZ — bu açıkça `protocols/architecture.md`'de dokümante edilen bir sınırlama.
+- Çoklu-dosya yayın: manifest/pointer-swap ile atomik hale getirilir — **AMA bu atomiklik SADECE event-log-farkında okuyucular için garanti edilir.** Mevcut ajanlar doğrudan `root-*.md` okuduğu için TAM çoklu-dosya atomikliği onlar için garanti EDİLEMEZ — açıkça `protocols/architecture.md`'de dokümante edilen bir sınırlama.
 **Dosyalar:** YENİ `scripts/lib/event-log.mjs`, YENİ `scripts/lib/transaction.mjs`
-**Proof:** Stable ID'lerin rename/reorder sonrası kırılmadığı, transaction'ın atomik olduğu (yarım kalanın hiçbir etkisi olmadığı), reconciliation'ın çakışmayı doğru tespit ettiği testlerle gösterilir.
+**Proof:** Stable ID'lerin rename/reorder sonrası kırılmadığı, transaction'ın atomik olduğu, reconciliation'ın çakışmayı doğru tespit ettiği, dirty-view gate'in beklenmedik üzerine-yazmayı engellediği testlerle gösterilir.
 
 ## Rock 2 — migrate.sh / init.sh / check-growth.sh
 

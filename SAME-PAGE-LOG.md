@@ -61,3 +61,21 @@ TÜMÜ kabul edildi, kesin kararlar verildi:
 **REDDEDİLEN:** Yok.
 
 PLAN.md v3'e işlendi.
+
+## Round 3 (bulgu sayısı 48→19→3, güçlü yakınsama)
+
+### Integrator findings (Codex, verbatim)
+1. Rock 3 stable-ID referans grafiğine dayanıyor ama Rock 6A `bkz:` kenar şemasını/legacy-migrasyonunu tanımlamıyor.
+2. Rock 0 TÜM HTML yorumlarını atlıyor ama Rock 6A kimliği HTML yorumunda saklıyor — parser, round-trip kimliği için gereken metadata'yı silebilir.
+3. Event-aware publisher, reconciliation'dan önce/sırasında yapılan doğrudan Markdown düzenlemelerinin üzerine yazabilir.
+
+VERDICT: NOT YET (ama sadece 3 bulgu, hepsi dar kapsamlı düzeltme)
+
+### Visionary response (Fable)
+
+Üçü de kabul edildi:
+1. **KABUL** — Rock 6A'ya kenar şeması eklendi: `bkz:` referansları artık stable-ID'ye işaret eden yapılandırılmış kenarlar olarak saklanıyor (Markdown'da hâlâ okunabilir `bkz:` metni olarak görünür ama altında ID-tabanlı bir kenar var), legacy serbest-metin referansların migration'ı test ediliyor.
+2. **KABUL** — Rock 0'ın parser'ı artık İKİ tür yorumu ayırt ediyor: "Urðr metadata yorumu" (tanınan format, `<!-- urdr:id ... -->` gibi bir prefix'le işaretli, parse edilip ilişkilendiriliyor) vs "sıradan yorum" (yok sayılıyor). Böylece Rock 6A'nın kimlik yorumları asla silinmiyor.
+3. **KABUL** — 6A'ya "dirty-view gate" eklendi: publish öncesi mevcut view'ın son checkpoint'ten beri değişip değişmediği kontrol ediliyor; değiştiyse reconciliation TAMAMLANMADAN publish REDDEDİLİYOR; üzerine yazılacak versiyon için kurtarma kopyası tutuluyor; bir transaction publish'i SIRASINDA eşzamanlı yönetilmeyen düzenleme açıkça DESTEKLENMİYOR (dokümante edilen sınırlama).
+
+PLAN.md v4'e işlendi. Bulgu sayısındaki düşüş (48→19→3) güçlü yakınsama sinyali — bir round daha çalıştırılıp SAME PAGE alınırsa build fazına geçilecek.
