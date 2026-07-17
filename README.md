@@ -26,11 +26,14 @@ Urðr solves this with a **tree-memory** approach — inspired by how humans org
 | Feature | Other Approaches | Urðr |
 |---------|-----------------|------|
 | **Structure** | Flat files, vector DBs, or SQL | 4-root tree with branches & leaves |
-| **Retrieval** | Full-file scan or semantic search | 4-step protocol (<300 tokens) |
-| **Consistency** | Often duplicated/copied across files | Single primary source + `bkz:` refs |
-| **Growth** | Unmanaged — becomes a junk drawer | Disciplined branch-splitting rules |
+| **Retrieval** | Full-file scan or a vector DB/embedding pipeline | Hierarchy first, then a dependency-free hybrid fallback (exact/regex + trigram/typo/Turkish-suffix ranking) — no embeddings, no network call |
+| **Source of truth** | The files on disk, full stop | An append-only, hash-chained event log; Markdown is a generated, still directly-editable view |
+| **Consistency** | Often duplicated/copied across files | Single primary source + stable-ID-backed `bkz:` edges, not free-text |
+| **Growth** | Unmanaged — becomes a junk drawer | Disciplined branch-splitting rules, plus a deterministic auto-split proposal when a branch outgrows them |
 | **Cross-domain** | Handled ad-hoc | Formal cross-cutting protocol |
-| **Agent integration** | Platform-specific only | OpenCode, Claude Code, NatureCo, Hermes, OpenClaw |
+| **Auditability & deletion** | Usually neither, or a bare irreversible delete | Optional provenance metadata per leaf; forgetting is a permanent tombstone that scrubs every derived artifact, with the historical ledger boundary explicitly documented |
+| **Maintenance** | Manual cleanup, or none | A memory compiler proposes concrete fixes (splits, index diffs, reference repairs) as a dry-run plan, applied only after explicit approval |
+| **Agent integration** | Platform-specific only | OpenCode, Claude Code, Codex CLI (MCP), NatureCo, Hermes, OpenClaw |
 
 ---
 
@@ -126,6 +129,7 @@ urdr/
 ├── README.md               # This file
 ├── LICENSE                 # MIT
 ├── AGENTS.md               # Guide for AI agents using Urðr
+├── package.json            # MCP server package (the only real npm dependency)
 │
 ├── templates/              # Memory root templates (EN + TR)
 │   ├── root-0-index.md
@@ -152,13 +156,16 @@ urdr/
 │   └── hermes/skill.yaml
 │
 ├── scripts/                # Utility scripts (cross-platform)
-│   ├── init.sh             # Initialize memory tree
+│   ├── init.sh             # Initialize memory tree (event log born from the start)
 │   ├── migrate.mjs         # Transactional branch/root restructuring
-│   ├── search.mjs          # Last-resort branch-aware search (Node, LLM-free)
+│   ├── search.mjs          # Hybrid branch-aware search (Node, LLM-free)
 │   ├── bench.mjs           # Retrieval/fidelity benchmark (Node, LLM-free)
-│   ├── append.mjs          # Concurrency-safe leaf writer (lock + atomic)
+│   ├── append.mjs          # Concurrency-safe, event-log-aware leaf writer
 │   ├── lint.mjs            # Memory health audit (growth/refs/dup, CI guard)
+│   ├── compiler.mjs        # Dry-run fix plans (splits, index diffs, ref repairs)
+│   ├── forget.mjs          # Permanent leaf tombstone + artifact scrub
 │   ├── mcp-server.mjs      # MCP tools over a confined memory-tree root
+│   ├── lib/                # Event log, transactions, lock, parser, telemetry, auto-split
 │   └── selftest.mjs        # Exercises every tool (CI, 3-OS matrix)
 │
 └── examples/               # Practical use cases
@@ -218,39 +225,64 @@ Disciplined rules for when to add branches, split overgrown ones, or create new 
 
 The 4-step hierarchy is the **primary** path — fast and cheap. But category-guessing has a failure mode: if the agent looks in the wrong root, information that *is* stored reads as "not found" — which, to a user, is indistinguishable from forgetting.
 
-Urðr ships a **last-resort search** that closes this gap without touching the architecture's elegance:
+Urðr ships a **hybrid last-resort search** that closes this gap without touching the architecture's elegance:
 
 ```bash
 # When the 4-step protocol comes up empty, scan everything (branch-aware):
-node scripts/search.mjs "sqlite" ./my-memory
+node scripts/search.mjs "sqltie karar" ./my-memory
 # → root-2-technical.md › ## APIs › **04.07.2026 — chose SQLite for local storage**
 ```
 
-- **LLM-free** — pure keyword/regex scan; zero token cost, ~0.2–0.6 ms/query.
-- **Cross-platform** — pure Node.js. No `grep`/`rg`/`awk` dependency (those don't exist on stock Windows). `ripgrep` is used only as an optional accelerator on very large trees.
+- **LLM-free, no embeddings, no network call** — exact/regex matching, then trigram-similarity fuzzy ranking over lightly stemmed tokens (with Turkish agglutinative-suffix stripping) catches typos and different inflections a literal scan would miss entirely.
+- **ReDoS-safe** — a regex query runs in a separate, terminable subprocess with a hard deadline; a pathological pattern gets killed and reported as a timeout, never a hang.
+- **Cross-platform** — pure Node.js. No `grep`/`rg`/`awk` dependency (those don't exist on stock Windows).
 - **Branch-aware** — every hit reports `file › ## branch › leaf`, so the agent still gets structured context.
+- **Telemetry is opt-in and aggregate-only** — disabled by default and a true no-op on disk when off; when enabled it records only hierarchy/fallback/miss/timeout counters, never a query, result, or leaf ID.
 - **Composable** — exits `0` on hit / `1` on miss (grep convention), or `--json` for programmatic use.
 
-This makes retrieval a *guarantee*, not a *guess*: hierarchy first, full scan as the net beneath it.
+This makes retrieval a *guarantee*, not a *guess*: hierarchy first, hybrid full-tree ranking as the net beneath it.
 
 ## Benchmark (`scripts/bench.mjs`)
 
-"Unlimited memory" is a claim until you measure it. `bench.mjs` builds a synthetic tree with a controllable share of **ambiguous** leaves (filed under one root, but naturally queried as another — the exact case where category-guessing fails) and reports real numbers:
+"Unlimited memory" is a claim until you measure it. `bench.mjs` builds a synthetic tree with a controllable share of **wrong-root** leaves (filed under one root, but naturally queried as another) and a controllable share of **collision** leaves (near-duplicate content, queried with a typo or a different Turkish suffix) — the honest way to measure recall, since a benchmark where every key is globally unique makes 100% recall trivial regardless of how good the retrieval actually is:
 
 ```bash
 node scripts/bench.mjs --leaves 300 --ambiguity 0.3
 ```
 
 ```
-  Write fidelity (stored == intended): 100.0%  ✓
-  recall@1, hierarchy-only        : 73.3%   ← fails on wrong-root guesses
-  recall@1, hierarchy + fallback  : 100.0%  ← safety net
-  rescued by fallback             : 80 leaves (26.7%)
-  avg retrieval latency           : 0.2 ms/query (CPU, no LLM call)
-  → Fallback lifted recall from 73.3% to 100.0% with zero LLM cost.
+  leaves: 300 · wrong-root: 93 (31.0%) · collision: 94 (31.3%) · seed: 42
+
+  Production-writer fidelity       : 100.0% (6/6 via appendLeaf + event log) ✓
+  Stable-ID import/oracle fidelity : 100.0% (300/300) ✓
+
+  recall@1, hierarchy-only         : 62.0%
+  recall@1, hierarchy + hybrid     : 89.7%
+  recall@1, unique exact keys      : 100.0% (206/206)
+  recall@1, collision/fuzzy keys   : 67.0% (63/94)
+  rescued by hybrid fallback       : 83 leaves (27.7%)
+
+  avg retrieval latency            : ~37 ms/query (CPU, no LLM/network call)
+  → Hybrid fallback changed recall from 62.0% to 89.7%; collision recall is reported separately.
 ```
 
-Identical results on macOS, Windows, and Linux (deterministic seed). Use it to prove the architecture works at volume — and to catch the growth bottleneck *before* production, not months later when users ask "why doesn't it remember?"
+Write fidelity is measured through the real `appendLeaf()` production writer, not a raw file write, and retrieval correctness is scored against Rock 6A stable IDs, not text-matching. Identical results on macOS, Windows, and Linux (deterministic seed). Use it to prove the architecture works at volume — and to catch the growth bottleneck *before* production, not months later when users ask "why doesn't it remember?"
+
+## Event Log & Transactions (`scripts/lib/event-log.mjs`, `scripts/lib/transaction.mjs`)
+
+Markdown files are the human-readable surface; the actual source of truth is an **append-only, hash-chained event log** (`.urdr/events.jsonl`). Every leaf gets a stable ID (a round-trippable `<!-- urdr:id:... -->` comment), `bkz:` references resolve to ID-backed edges instead of free text, and multi-file changes commit atomically through one transaction. Direct edits to the Markdown files are still fully supported — a reconciliation step diffs them back against the log and flags a genuine conflict (never silently auto-merges) if the same leaf changed both ways.
+
+- **Crash-safe.** Every write is fsync'd and atomically renamed; a process killed mid-publish self-heals on the next read instead of corrupting state or losing a leaf.
+- **Concurrency-safe.** A separate lease-keeper subprocess renews the lock on its own timer, so a busy writer can't lose the lock to a false "stale" steal.
+- **Provenance (optional).** Any leaf may carry `creator`, `timestamp`, `source`, `confidence`, `verification_state`, `verifier`, and `validity_interval` metadata — fully additive, no migration needed for existing leaves.
+- **Forgetting.** `scripts/forget.mjs` writes a permanent tombstone and scrubs the leaf's bytes from every generation snapshot, recovery copy, and registered export — self-verifying that nothing survives. The one thing it cannot do is redact the historical ledger in place (that would break the hash chain); this boundary is documented in `protocols/architecture.md`, not hidden.
+- **Memory compiler (`scripts/compiler.mjs`).** Turns lint findings into a concrete dry-run plan — deterministic branch-split proposals (keyword/Jaccard clustering, no ML), index diffs, and unambiguous reference repairs — bound to the current event-log head hash, so an approved plan is rejected as stale if anything else committed first. Applying is always one atomic transaction.
+
+```bash
+node scripts/compiler.mjs ./my-memory --out plan.json   # dry-run, changes nothing
+node scripts/compiler.mjs ./my-memory --apply plan.json # apply an approved, still-fresh plan
+node scripts/forget.mjs ./my-memory --id <stable-id> --reason "..."
+```
 
 ## Concurrency-Safe Writes (`scripts/append.mjs`)
 
@@ -262,11 +294,12 @@ The instant more than one writer touches the same memory, naive "read file → r
 node scripts/append.mjs ./my-memory root-2-technical.md "APIs" "**04.07.2026 — chose SQLite — ok**"
 ```
 
-- **Advisory lock** via atomic `mkdir` (the one primitive guaranteed atomic on every OS/filesystem); stale locks (crashed writer) are auto-stolen after 30 s.
+- **Lease lock, not a bare advisory mkdir.** A separate lease-keeper subprocess acquires the lock and renews it on its own timer — a busy writer's blocked event loop can't cause a false "stale lock" steal, and a genuinely crashed writer's lock still gets reclaimed safely (token-checked, so a former owner can never delete a successor's lock).
+- **Writes go through the event log**, not a bare file rewrite — a new leaf gets a stable ID and is immediately visible in committed state, no separate import step.
 - **Append-only** — inserts under the right `## branch` (replacing `_No entries yet._`), never overwrites sibling leaves.
-- **Atomic write** — temp file + `rename`, so a half-written file is never observable.
+- **Atomic write** — fsync + temp file + durable rename (platform-specific: directory fsync on Linux/macOS, `MoveFileEx` with `MOVEFILE_WRITE_THROUGH` on Windows), so a half-written file is never observable and a crash mid-write always recovers cleanly.
 
-Verified: 15 concurrent writers → 15 leaves, zero loss, file integrity intact (macOS + Windows).
+Verified: 15 concurrent writers → 15 leaves, zero loss, file integrity intact (macOS + Windows). Concurrent writers to different root files now serialize through the one event log — an intentional consequence of a single authoritative hash chain, not a regression; correctness (no lost leaf) is what's guaranteed, not parallel execution.
 
 ## Health Lint (`scripts/lint.mjs`)
 
