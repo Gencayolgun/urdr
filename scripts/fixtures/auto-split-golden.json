@@ -1,0 +1,46 @@
+{
+  "input": {
+    "file": "root-2-technical.md",
+    "branch": "Operations",
+    "leaves": [
+      { "id": "a1", "text": "deployment release pipeline automation" },
+      { "id": "a2", "text": "deployment rollback pipeline checklist" },
+      { "id": "a3", "text": "deployment canary release procedure" },
+      { "id": "s1", "text": "security secret rotation vault" },
+      { "id": "s2", "text": "security credential vault audit" },
+      { "id": "s3", "text": "security secret scanning policy" }
+    ]
+  },
+  "expected": {
+    "type": "branch.split",
+    "file": "root-2-technical.md",
+    "branch": "Operations",
+    "algorithm": "deterministic-keyword-jaccard-v1",
+    "leafCount": 6,
+    "confidence": 0.708,
+    "clusters": [
+      {
+        "name": "Operations / Deployment",
+        "keyword": "deployment",
+        "leafIds": ["a1", "a2", "a3"],
+        "evidence": [
+          { "keyword": "deployment", "count": 3 },
+          { "keyword": "pipeline", "count": 2 },
+          { "keyword": "release", "count": 2 }
+        ],
+        "confidence": 0.708
+      },
+      {
+        "name": "Operations / Security",
+        "keyword": "security",
+        "leafIds": ["s1", "s2", "s3"],
+        "evidence": [
+          { "keyword": "security", "count": 3 },
+          { "keyword": "secret", "count": 2 },
+          { "keyword": "vault", "count": 2 }
+        ],
+        "confidence": 0.708
+      }
+    ]
+  }
+}

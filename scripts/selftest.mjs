@@ -583,14 +583,14 @@ console.log('\n  🌳 Urðr self-test\n  ' + '─'.repeat(50));
 
 // Rock-focused suites stay isolated so their CLI/process fixtures cannot leak state into
 // the long-running concurrency suite, but they are still part of this canonical proof run.
-for (const [file, label] of [['rock2-selftest.mjs', 'Rock 2'], ['rock3-selftest.mjs', 'Rock 3'], ['rock5-selftest.mjs', 'Rock 5']]) {
+for (const [file, label] of [['rock2-selftest.mjs', 'Rock 2'], ['rock3-selftest.mjs', 'Rock 3'], ['rock5-selftest.mjs', 'Rock 5'], ['rock6c-selftest.mjs', 'Rock 6C']]) {
   const result = spawnSync(process.execPath, [fileURLToPath(new URL(`./${file}`, import.meta.url))], {
     encoding: 'utf8',
     windowsHide: true,
   });
   if (result.stdout) process.stdout.write(result.stdout);
   if (result.stderr) process.stderr.write(result.stderr);
-  const count = Number(result.stdout?.match(/(\d+) Rock \d+ tests passed/)?.[1] || 0);
+  const count = Number(result.stdout?.match(/(\d+) Rock \w+ tests passed/)?.[1] || 0);
   if (result.status === 0 && count > 0) passed += count;
   else {
     failed++;

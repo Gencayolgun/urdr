@@ -103,7 +103,7 @@ function addStateDiff(tx, beforeState, contents) {
   for (const id of beforeState.leaves.keys()) if (!after.has(id)) tx.deleteLeaf(id);
   for (const leaf of after.values()) {
     const previous = beforeState.leaves.get(leaf.id);
-    if (!previous || ['file', 'branch', 'kind', 'index', 'text', 'contentHash'].some((key) => previous[key] !== leaf[key])) tx.upsertLeaf(leaf);
+    if (!previous || ['file', 'branch', 'kind', 'index', 'text', 'contentHash'].some((key) => previous[key] !== leaf[key])) tx.upsertLeaf({ ...(previous || {}), ...leaf });
   }
 }
 

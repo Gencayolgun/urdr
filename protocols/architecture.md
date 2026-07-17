@@ -116,7 +116,8 @@ Every piece of information lives in **one primary** location. If it appears else
 
 - Dates are written as **inline markers**, not headings.
 - Event format: `**DD.MM.YYYY — Event — Outcome**`
-- Old information is **never deleted**. It stays in place or moves to a "Dated Events" branch.
+- Old information is normally retained. A user-triggered forgetting request is the explicit
+  exception described under "Forgetting boundary" below.
 
 ### 5.3 Insertion Rule
 
@@ -191,6 +192,43 @@ When a new question arrives:
 - **Cross-reference discipline must not relax.** One primary only. Otherwise the system degrades into inconsistency.
 - **"Save everything" trap.** Only save information that will be **needed again**. Most session events aren't worth recording.
 - **Stale data problem.** Very old information loses relevance. Periodic summarization is needed (weekly audit).
+
+### Event-log and publication boundaries
+
+- **Legacy-reader publication atomicity.** Event-log-aware readers follow the generation pointer
+  and observe a multi-root transaction atomically. Readers that open `root-*.md` directly receive
+  only per-file atomic replacement; they can briefly observe a mixed generation while multiple
+  files are materialized. A direct edit arriving during that publish window is unsupported.
+- **Forgetting boundary.** `scripts/forget.mjs` writes a `leaf.forget` tombstone, removes the leaf
+  from current and all future committed state/views, and scrubs its bytes from obsolete managed
+  generations, recovery files, temporary files, and exports registered by `exportMarkdown()`.
+  Artifact retention limits can additionally remove old generations and expired recovery copies.
+  Search telemetry needs no content redaction: it stores aggregate outcome counters only and its
+  API does not accept query text, result text, or leaf IDs.
+- **The append-only ledger is not physically redacted.** The original creation event remains in
+  `.urdr/events.jsonl`. Each record's `prevHash` commits to the exact preceding record, so changing
+  an old event in place would invalidate every later hash. Supporting redactable history would
+  require a different ledger design (for example, independently redactable Merkle leaves) and is
+  outside this architecture. True erasure of historical log bytes is therefore a manual,
+  out-of-band raw-file operation that necessarily abandons or rebuilds the existing audit chain.
+  Forgetting guarantees erasure from live materialized artifacts, current state, and all future
+  state—not from historical ledger records.
+- **Export scope.** Exports made through `exportMarkdown()` are registered and scrubbed. Copies
+  made by unrelated tools or moved beyond their registered path cannot be discovered reliably and
+  must be erased by the operator.
+
+### Optional provenance and compiler approval
+
+Leaves may carry optional `creator`, `timestamp`, `source`, `confidence`, `verification_state`,
+`verifier`, and `validity_interval` fields. Existing leaves require no migration. These fields are
+additive keys on the version-1 `leaf.upsert` payload, and `leaf.provenance` is a narrow metadata-only
+operation, so `EVENT_SCHEMA_VERSION` remains 1; older readers already ignore operation types and
+keys they do not understand. The canonical serialization and hash-chain algorithm are unchanged.
+
+The memory compiler defaults to dry-run. It emits deterministic branch-split evidence, index
+diffs, and unambiguous stable-ID reference repairs. Each plan is bound to the committed event-log
+head; `--apply` rejects the plan if any transaction committed after it was generated. Applicable
+actions are published through one normal transaction only after the plan is explicitly applied.
 
 ---
 

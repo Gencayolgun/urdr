@@ -16,6 +16,7 @@ import {
   canonicalJson,
   eventLogPaths,
   hashContent,
+  PROVENANCE_FIELDS,
   readCommittedState,
 } from './event-log.mjs';
 
@@ -310,7 +311,26 @@ export class Transaction {
     const { sequence, ...value } = leaf;
     return this.addOperation({ type: 'leaf.upsert', leaf: value });
   }
+  updateLeafProvenance(id, provenance) {
+    if (!id) throw new Error('leaf provenance update requires an id');
+    if (!provenance || typeof provenance !== 'object' || Array.isArray(provenance)) {
+      throw new Error('leaf provenance update requires an object');
+    }
+    const unknown = Object.keys(provenance).filter((key) => !PROVENANCE_FIELDS.includes(key));
+    if (unknown.length) throw new Error(`unknown provenance field: ${unknown[0]}`);
+    return this.addOperation({ type: 'leaf.provenance', id, provenance });
+  }
   deleteLeaf(id) { return this.addOperation({ type: 'leaf.delete', id }); }
+  forgetLeaf(id, reason = null, identity = null) {
+    if (!id) throw new Error('leaf forget requires an id');
+    if (!identity || typeof identity.text !== 'string' || typeof identity.file !== 'string') {
+      throw new Error('leaf forget requires text and file for resumable artifact scrubbing');
+    }
+    return this.addOperation({
+      type: 'leaf.forget', id, text: identity.text, file: identity.file,
+      ...(reason ? { reason: String(reason) } : {}),
+    });
+  }
   upsertEdge(edge) {
     const { sequence, ...value } = edge;
     return this.addOperation({ type: 'edge.upsert', edge: value });
@@ -334,6 +354,9 @@ export class Transaction {
       assertLeaseOwned(lock);
       const state = readCommittedState(this.memoryDir);
       if (!state.integrity) throw new Error(`event log integrity failure: ${state.errors.map((item) => item.code).join(', ')}`);
+      for (const operation of this.operations) if (operation.type === 'leaf.upsert' && state.forgottenLeaves.has(operation.leaf.id)) {
+        throw new Error(`cannot upsert permanently forgotten leaf: ${operation.leaf.id}`);
+      }
 
       const dirty = new Map();
       for (const [file] of this.views) {
@@ -395,8 +418,38 @@ export function beginTransaction(memoryDir, opts) {
   return new Transaction(memoryDir, opts);
 }
 
-function loadRootContents(memoryDir) {
+export function loadRootContents(memoryDir) {
   return new Map(listRootFiles(memoryDir).map((file) => [path.basename(file), fs.readFileSync(file, 'utf8')]));
+}
+
+/** Populate one existing transaction from complete proposed root views. */
+export function populateTransactionFromViews(transaction, state, contents, opts = {}) {
+  const forgotten = new Set(opts.forgottenIds || []);
+  const snapshots = new Map();
+  const currentLeaves = new Map();
+  for (const [file, content] of contents) {
+    const snapshot = leafSnapshot(file, content);
+    snapshots.set(file, snapshot);
+    for (const [id, leaf] of snapshot.leaves) {
+      if (currentLeaves.has(id)) throw new Error(`duplicate Urðr leaf id: ${id}`);
+      currentLeaves.set(id, leaf);
+      const previous = state.leaves.get(id) || {};
+      transaction.upsertLeaf({ ...previous, ...leaf });
+    }
+  }
+  for (const id of state.leaves.keys()) if (!currentLeaves.has(id)) {
+    if (forgotten.has(id)) {
+      transaction.forgetLeaf(id, opts.reason, opts.forgottenLeafIdentities?.get(id) || state.leaves.get(id));
+    }
+    else transaction.deleteLeaf(id);
+  }
+
+  const edges = deriveEdges(contents, false);
+  for (const edge of edges.values()) transaction.upsertEdge(edge);
+  for (const id of state.edges.keys()) if (!edges.has(id)) transaction.deleteEdge(id);
+  const publishFiles = opts.publishFiles ? new Set(opts.publishFiles) : new Set(contents.keys());
+  for (const [file, content] of contents) if (publishFiles.has(file)) transaction.publishRoot(file, content);
+  return { edges, leaves: currentLeaves, snapshots };
 }
 
 export function importMarkdown(memoryDir, opts = {}) {
@@ -422,7 +475,7 @@ export function importMarkdown(memoryDir, opts = {}) {
     for (const leaf of snapshot.leaves.values()) {
       if (seenIds.has(leaf.id)) throw new Error(`duplicate Urðr leaf id: ${leaf.id}`);
       seenIds.add(leaf.id);
-      transaction.upsertLeaf(leaf);
+      transaction.upsertLeaf({ ...(state.leaves.get(leaf.id) || {}), ...leaf });
       importedLeaves++;
     }
     transaction.publishRoot(file, content);
@@ -479,7 +532,7 @@ export function reconcileMarkdown(memoryDir, opts = {}) {
     expectedDirtyHashes: [...raw].map(([file, content]) => [file, hashContent(content)]),
     lock: opts.lock,
   });
-  for (const leaf of directChanges.values()) transaction.upsertLeaf(leaf);
+  for (const leaf of directChanges.values()) transaction.upsertLeaf({ ...(state.leaves.get(leaf.id) || {}), ...leaf });
   for (const id of deleted.keys()) transaction.deleteLeaf(id);
   for (const edge of edges.values()) transaction.upsertEdge(edge);
   const managedIds = new Set([...currentLeaves.keys(), ...deleted.keys()]);
@@ -527,6 +580,9 @@ export function exportMarkdown(memoryDir, outputDir) {
   fs.mkdirSync(outputDir, { recursive: true });
   const generation = readPublishedGeneration(memoryDir);
   for (const [file, content] of generation.files) fs.writeFileSync(path.join(outputDir, file), content, 'utf8');
+  const registry = path.join(path.resolve(memoryDir), '.urdr', 'exports.jsonl');
+  fs.mkdirSync(path.dirname(registry), { recursive: true });
+  fs.appendFileSync(registry, `${JSON.stringify({ directory: path.resolve(outputDir), timestamp: new Date().toISOString() })}\n`, 'utf8');
   return { files: [...generation.files.keys()], generationId: generation.generationId };
 }
 

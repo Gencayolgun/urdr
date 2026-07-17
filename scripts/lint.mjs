@@ -6,9 +6,9 @@ import { fileURLToPath } from 'node:url';
 import { readCommittedState } from './lib/event-log.mjs';
 import { listRootFiles, parseMarkdown } from './lib/markdown-model.mjs';
 
-const MAX_BRANCHES = 9;
-const WARN_LEAVES = 30;
-const MAX_LEAVES = 50;
+export const MAX_BRANCHES = 9;
+export const WARN_LEAVES = 30;
+export const MAX_LEAVES = 50;
 const DUP_THRESHOLD = 0.85;
 const INDEX_LEAF_WARN = 15;
 
@@ -54,7 +54,15 @@ function addReferenceFindings(dir, findings) {
   const outgoing = new Map();
   for (const edge of state.edges.values()) {
     if (edge.status !== 'resolved' || !edge.targetId || !state.leaves.has(edge.sourceId) || !state.leaves.has(edge.targetId)) {
-      findings.push({ level: 'error', code: 'broken-ref', msg: `${leafLocation(edge.sourceId)}: unresolved stable-ID reference ${edge.id} (${edge.status})` });
+      findings.push({
+        level: 'error', code: 'broken-ref',
+        msg: `${leafLocation(edge.sourceId)}: unresolved stable-ID reference ${edge.id} (${edge.status})`,
+        details: {
+          edge: { ...edge },
+          source: state.leaves.get(edge.sourceId) || null,
+          target: state.leaves.get(edge.targetId) || null,
+        },
+      });
       continue;
     }
     const targets = outgoing.get(edge.sourceId) || new Set();
@@ -117,12 +125,12 @@ export function lintTree(dir) {
   for (const root of parsed) {
     if (root.branches.length >= MAX_BRANCHES) add('warn', 'root-branches', `${root.file}: ${root.branches.length} branches (>= ${MAX_BRANCHES}) — consider splitting into a new root`);
     for (const branch of root.branches) {
-      if (branch.leaves.length >= MAX_LEAVES) add('error', 'branch-leaves', `${root.file} › ## ${branch.name}: ${branch.leaves.length} leaves (>= ${MAX_LEAVES}) — split into sub-branches`);
-      else if (branch.leaves.length >= WARN_LEAVES) add('warn', 'branch-leaves', `${root.file} › ## ${branch.name}: ${branch.leaves.length} leaves (>= ${WARN_LEAVES}) — approaching split limit`);
+      if (branch.leaves.length >= MAX_LEAVES) findings.push({ level: 'error', code: 'branch-leaves', msg: `${root.file} › ## ${branch.name}: ${branch.leaves.length} leaves (>= ${MAX_LEAVES}) — split into sub-branches`, details: { file: root.file, branch: branch.name, count: branch.leaves.length, threshold: MAX_LEAVES } });
+      else if (branch.leaves.length >= WARN_LEAVES) findings.push({ level: 'warn', code: 'branch-leaves', msg: `${root.file} › ## ${branch.name}: ${branch.leaves.length} leaves (>= ${WARN_LEAVES}) — approaching split limit`, details: { file: root.file, branch: branch.name, count: branch.leaves.length, threshold: WARN_LEAVES } });
     }
     if (root.isIndex) {
       const count = root.branches.reduce((sum, branch) => sum + branch.leaves.length, 0);
-      if (count >= INDEX_LEAF_WARN) add('warn', 'index-bloat', `${root.file}: index holds ${count} content leaves — it should map, not store leaves`);
+      if (count >= INDEX_LEAF_WARN) findings.push({ level: 'warn', code: 'index-bloat', msg: `${root.file}: index holds ${count} content leaves — it should map, not store leaves`, details: { file: root.file, count, threshold: INDEX_LEAF_WARN } });
     }
     // Legacy trees have no event graph yet. Preserve broken-root diagnostics during
     // migration, but deliberately do not infer graph depth from this prose.

@@ -5,6 +5,10 @@ import { atomicReplaceFile } from '../append.mjs';
 import { acquireLeaseLock, assertLeaseOwned, releaseLeaseLock } from './lock.mjs';
 
 export const EVENT_SCHEMA_VERSION = 1;
+export const PROVENANCE_FIELDS = Object.freeze([
+  'creator', 'timestamp', 'source', 'confidence', 'verification_state',
+  'verifier', 'validity_interval',
+]);
 export const EVENT_LOG_RELATIVE_PATH = path.join('.urdr', 'events.jsonl');
 export const EVENT_HEAD_RELATIVE_PATH = path.join('.urdr', 'event-head.json');
 
@@ -220,21 +224,33 @@ export function readCommittedState(memoryDir) {
 
   const leaves = new Map();
   const leafChanges = new Map();
+  const forgottenLeaves = new Set();
   const edges = new Map();
   const checkpoints = new Map();
   for (const record of operations) {
     const operation = record.operation || {};
     if (operation.type === 'leaf.upsert') {
+      if (forgottenLeaves.has(operation.leaf.id)) continue;
       leaves.set(operation.leaf.id, { ...operation.leaf, sequence: record.sequence });
       leafChanges.set(operation.leaf.id, record.sequence);
-    } else if (operation.type === 'leaf.delete') {
+    } else if (operation.type === 'leaf.provenance') {
+      const leaf = leaves.get(operation.id);
+      if (leaf) {
+        const provenance = Object.fromEntries(PROVENANCE_FIELDS
+          .filter((key) => Object.hasOwn(operation.provenance || {}, key))
+          .map((key) => [key, operation.provenance[key]]));
+        leaves.set(operation.id, { ...leaf, ...provenance, sequence: record.sequence });
+        leafChanges.set(operation.id, record.sequence);
+      }
+    } else if (operation.type === 'leaf.delete' || operation.type === 'leaf.forget') {
       leaves.delete(operation.id);
       leafChanges.set(operation.id, record.sequence);
+      if (operation.type === 'leaf.forget') forgottenLeaves.add(operation.id);
     }
     else if (operation.type === 'edge.upsert') edges.set(operation.edge.id, { ...operation.edge, sequence: record.sequence });
     else if (operation.type === 'edge.delete') edges.delete(operation.id);
     else if (operation.type === 'view.checkpoint') checkpoints.set(operation.file, { ...operation, sequence: record.sequence });
   }
 
-  return { ...log, operations, committedTransactions, leaves, leafChanges, edges, checkpoints };
+  return { ...log, operations, committedTransactions, leaves, leafChanges, forgottenLeaves, edges, checkpoints };
 }
