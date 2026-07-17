@@ -18,6 +18,16 @@ import { appendLeaf, insertLeaf, resolveConfinedTarget } from './append.mjs';
 import { lintTree } from './lint.mjs';
 import { parseMarkdown } from './lib/markdown-model.mjs';
 import { acquireLeaseLock, assertLeaseOwned, releaseLeaseLock } from './lib/lock.mjs';
+import { canonicalJson, hashContent, hashEvent, readCommittedState, readEventLog } from './lib/event-log.mjs';
+import {
+  beginTransaction,
+  DirtyViewError,
+  exportMarkdown,
+  importMarkdown,
+  readPublishedGeneration,
+  readPublishedRoot,
+  reconcileMarkdown,
+} from './lib/transaction.mjs';
 
 let passed = 0, failed = 0;
 function ok(cond, msg) {
@@ -177,6 +187,262 @@ console.log('\n  🌳 Urðr self-test\n  ' + '─'.repeat(50));
     ok(!fs.readdirSync(dir).some((name) => name.includes('.tmp-')), `atomic write: ${stage} cleans temporary files`);
     fs.rmSync(dir, { recursive: true, force: true });
   }
+}
+
+// ── event log + stable IDs ───────────────────────────────────
+{
+  ok(canonicalJson({ z: 1, a: { y: 2, b: 3 } }) === '{"a":{"b":3,"y":2},"z":1}',
+    'event log: canonical JSON recursively sorts keys');
+
+  const future = fs.mkdtempSync(path.join(os.tmpdir(), 'urdr-selftest-schema-'));
+  fs.mkdirSync(path.join(future, '.urdr'));
+  const futureRecord = { schemaVersion: 2, kind: 'future', prevHash: null, sequence: 1 };
+  futureRecord.hash = hashEvent(futureRecord);
+  fs.writeFileSync(path.join(future, '.urdr', 'events.jsonl'), `${canonicalJson(futureRecord)}\n`);
+  const futureRead = readEventLog(future);
+  ok(futureRead.integrity && futureRead.records.length === 1
+    && futureRead.warnings.some((warning) => warning.code === 'unsupported-schema-version'),
+  'event log: newer schema records are preserved and reported without crashing');
+  fs.rmSync(future, { recursive: true, force: true });
+
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'urdr-selftest-stable-'));
+  fs.writeFileSync(path.join(dir, 'root-1-topics.md'), [
+    '# Root-1', '', '## Items', '',
+    '**01.01.2026 - duplicate - same text**', '',
+    '**01.01.2026 - duplicate - same text**', '',
+  ].join('\n'));
+  const firstImport = importMarkdown(dir);
+  let model = parseMarkdown(fs.readFileSync(path.join(dir, 'root-1-topics.md'), 'utf8'));
+  const originalIds = model.leaves.map((leaf) => leaf.id);
+  ok(firstImport.status === 'imported' && new Set(originalIds).size === 2 && originalIds.every(Boolean),
+    'stable IDs: duplicate leaves receive distinct embedded IDs');
+
+  const reordered = [
+    '# Root-1', '', '## Renamed Items', '',
+    `<!-- urdr:id:${originalIds[1]} -->`, model.leaves[1].raw, '',
+    `<!-- urdr:id:${originalIds[0]} -->`, model.leaves[0].raw.replace('same text', 'edited text'), '',
+  ].join('\n');
+  fs.writeFileSync(path.join(dir, 'root-1-topics.md'), reordered);
+  const reconciled = reconcileMarkdown(dir);
+  model = parseMarkdown(fs.readFileSync(path.join(dir, 'root-1-topics.md'), 'utf8'));
+  ok(reconciled.status === 'reconciled' && new Set(model.leaves.map((leaf) => leaf.id)).size === 2
+    && originalIds.every((id) => model.leaves.some((leaf) => leaf.id === id)),
+  'stable IDs: IDs survive branch rename, reorder, and leaf edit');
+
+  const exported = fs.mkdtempSync(path.join(os.tmpdir(), 'urdr-selftest-export-'));
+  exportMarkdown(dir, exported);
+  importMarkdown(exported);
+  const exportedIds = parseMarkdown(fs.readFileSync(path.join(exported, 'root-1-topics.md'), 'utf8')).leaves.map((leaf) => leaf.id);
+  const eventCount = readEventLog(exported).records.length;
+  const repeated = importMarkdown(exported);
+  ok(originalIds.every((id) => exportedIds.includes(id)) && repeated.status === 'unchanged'
+    && readEventLog(exported).records.length === eventCount,
+  'stable IDs: export/re-import round-trip is idempotent');
+  fs.rmSync(dir, { recursive: true, force: true });
+  fs.rmSync(exported, { recursive: true, force: true });
+}
+
+// ── structured bkz edges ─────────────────────────────────────
+{
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'urdr-selftest-edges-'));
+  fs.writeFileSync(path.join(dir, 'root-1-topics.md'), [
+    '# Root-1', '', '## Projects', '',
+    '- linked project (bkz: Root-2 / APIs)', '',
+    '- ambiguous project (bkz: Root-2 / Systems)', '',
+  ].join('\n'));
+  fs.writeFileSync(path.join(dir, 'root-2-technical.md'), [
+    '# Root-2', '', '## APIs', '', '- canonical API leaf', '',
+    '## Systems', '', '- first system', '', '- second system', '',
+  ].join('\n'));
+  importMarkdown(dir);
+  const state = readCommittedState(dir);
+  const markdown = fs.readFileSync(path.join(dir, 'root-1-topics.md'), 'utf8');
+  ok([...state.edges.values()].some((edge) => edge.status === 'resolved' && edge.targetId)
+    && /<!-- urdr:edge:\d+:u_/.test(markdown),
+  'bkz edges: unambiguous legacy reference migrates to an ID-backed edge');
+  ok([...state.edges.values()].some((edge) => edge.status === 'legacy-unresolved' && edge.targetId === null),
+    'bkz edges: ambiguous legacy reference is explicitly flagged unresolved');
+  fs.rmSync(dir, { recursive: true, force: true });
+}
+
+// ── transaction atomicity ────────────────────────────────────
+{
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'urdr-selftest-tx-'));
+  fs.writeFileSync(path.join(dir, 'root-2-technical.md'), '# Root-2\n\n## APIs\n\n- initial\n');
+  importMarkdown(dir);
+  const before = readCommittedState(dir).operations.length;
+  const aborted = beginTransaction(dir);
+  aborted.addOperation({ type: 'test.aborted', value: 1 });
+  aborted.abort();
+  ok(readCommittedState(dir).operations.length === before, 'transaction: abort has zero visible effect');
+
+  const interrupted = beginTransaction(dir);
+  interrupted.addOperation({ type: 'test.interrupted', value: 1 });
+  let interruptedFault = false;
+  try { interrupted.commit({ faultAt: 'before-fsync' }); }
+  catch (error) { interruptedFault = /fault injection/.test(error.message); }
+  ok(interruptedFault && readCommittedState(dir).operations.length === before,
+    'transaction: interrupted uncommitted operations have zero visible effect');
+  fs.rmSync(dir, { recursive: true, force: true });
+
+  const recovery = fs.mkdtempSync(path.join(os.tmpdir(), 'urdr-selftest-tx-recovery-'));
+  const recoveryFile = path.join(recovery, 'root-2-technical.md');
+  fs.writeFileSync(recoveryFile, '# Root-2\n\n## APIs\n\n- original\n');
+  importMarkdown(recovery);
+  const recoveryBefore = fs.readFileSync(recoveryFile, 'utf8');
+  const recoveryLeaf = readCommittedState(recovery).leaves.get(parseMarkdown(recoveryBefore).leaves[0].id);
+  const recoveryNext = recoveryBefore.replace('- original', '- committed before crash');
+  let recoveryFault = false;
+  try {
+    beginTransaction(recovery)
+      .upsertLeaf({ ...recoveryLeaf, text: '- committed before crash', contentHash: hashContent('- committed before crash') })
+      .publishRoot('root-2-technical.md', recoveryNext)
+      .commit({ faultAt: 'before-published-view-materialization' });
+  } catch (error) { recoveryFault = /fault injection/.test(error.message); }
+  const committedRecords = readEventLog(recovery).records.length;
+  ok(recoveryFault && fs.readFileSync(recoveryFile, 'utf8') === recoveryBefore
+    && [...readCommittedState(recovery).leaves.values()].some((leaf) => leaf.text === '- committed before crash'),
+  'transaction recovery: committed event survives a crash before live-file materialization');
+  const recovered = reconcileMarkdown(recovery);
+  ok(recovered.status === 'clean' && fs.readFileSync(recoveryFile, 'utf8') === recoveryNext
+    && readEventLog(recovery).records.length === committedRecords
+    && [...readCommittedState(recovery).leaves.values()].some((leaf) => leaf.text === '- committed before crash'),
+  'transaction recovery: reconcile repairs the live file without logging a spurious deletion');
+  fs.rmSync(recovery, { recursive: true, force: true });
+
+  const partial = fs.mkdtempSync(path.join(os.tmpdir(), 'urdr-selftest-tx-partial-'));
+  const partialTechnical = path.join(partial, 'root-2-technical.md');
+  const partialDecisions = path.join(partial, 'root-3-decisions.md');
+  fs.writeFileSync(partialTechnical, '# Root-2\n\n## APIs\n\n- old API\n');
+  fs.writeFileSync(partialDecisions, '# Root-3\n\n## Rules\n\n- old rule\n');
+  importMarkdown(partial);
+  const technicalBefore = fs.readFileSync(partialTechnical, 'utf8');
+  const decisionsBefore = fs.readFileSync(partialDecisions, 'utf8');
+  const partialState = readCommittedState(partial);
+  const technicalLeaf = partialState.leaves.get(parseMarkdown(technicalBefore).leaves[0].id);
+  const decisionsLeaf = partialState.leaves.get(parseMarkdown(decisionsBefore).leaves[0].id);
+  const technicalAfter = technicalBefore.replace('- old API', '- new API');
+  const decisionsAfter = decisionsBefore.replace('- old rule', '- new rule');
+  let materializedFiles = 0;
+  let partialFault = false;
+  try {
+    beginTransaction(partial)
+      .upsertLeaf({ ...technicalLeaf, text: '- new API', contentHash: hashContent('- new API') })
+      .upsertLeaf({ ...decisionsLeaf, text: '- new rule', contentHash: hashContent('- new rule') })
+      .publishRoot('root-2-technical.md', technicalAfter)
+      .publishRoot('root-3-decisions.md', decisionsAfter)
+      .commit({ faultInjector(stage) {
+        if (stage === 'after-published-view-materialization-file' && ++materializedFiles === 1) {
+          throw new Error(`fault injection: ${stage}`);
+        }
+      } });
+  } catch (error) { partialFault = /fault injection/.test(error.message); }
+  const partialRecords = readEventLog(partial).records.length;
+  ok(partialFault && fs.readFileSync(partialTechnical, 'utf8') === technicalAfter
+    && fs.readFileSync(partialDecisions, 'utf8') === decisionsBefore,
+  'transaction recovery: multi-file crash leaves an observable partial materialization');
+  const partialRecovered = importMarkdown(partial);
+  const partialRecoveredState = readCommittedState(partial);
+  ok(partialRecovered.status === 'unchanged'
+    && fs.readFileSync(partialTechnical, 'utf8') === technicalAfter
+    && fs.readFileSync(partialDecisions, 'utf8') === decisionsAfter
+    && readEventLog(partial).records.length === partialRecords
+    && partialRecoveredState.leaves.get(technicalLeaf.id)?.text === '- new API'
+    && partialRecoveredState.leaves.get(decisionsLeaf.id)?.text === '- new rule',
+  'transaction recovery: import resumes all files without silently losing the unwritten view');
+  fs.rmSync(partial, { recursive: true, force: true });
+}
+
+// ── reconciliation and dirty-view gate ───────────────────────
+{
+  const clean = fs.mkdtempSync(path.join(os.tmpdir(), 'urdr-selftest-reconcile-clean-'));
+  fs.writeFileSync(path.join(clean, 'root-2-technical.md'), '# Root-2\n\n## APIs\n\n- original\n');
+  importMarkdown(clean);
+  const cleanFile = path.join(clean, 'root-2-technical.md');
+  fs.writeFileSync(cleanFile, fs.readFileSync(cleanFile, 'utf8').replace('- original', '- direct edit'));
+  const cleanResult = reconcileMarkdown(clean);
+  ok(cleanResult.status === 'reconciled' && [...readCommittedState(clean).leaves.values()].some((leaf) => /direct edit/.test(leaf.text)),
+    'reconciliation: clean direct edit becomes a committed event');
+  fs.rmSync(clean, { recursive: true, force: true });
+
+  const conflict = fs.mkdtempSync(path.join(os.tmpdir(), 'urdr-selftest-reconcile-conflict-'));
+  fs.writeFileSync(path.join(conflict, 'root-2-technical.md'), '# Root-2\n\n## APIs\n\n- original\n');
+  importMarkdown(conflict);
+  const conflictFile = path.join(conflict, 'root-2-technical.md');
+  const parsed = parseMarkdown(fs.readFileSync(conflictFile, 'utf8'));
+  const leaf = readCommittedState(conflict).leaves.get(parsed.leaves[0].id);
+  beginTransaction(conflict).upsertLeaf({ ...leaf, text: '- event-log edit', contentHash: 'event-log-edit' }).commit();
+  fs.writeFileSync(conflictFile, fs.readFileSync(conflictFile, 'utf8').replace('- original', '- direct edit'));
+  const conflictResult = reconcileMarkdown(conflict);
+  ok(conflictResult.status === 'conflict' && conflictResult.conflicts[0].id === leaf.id,
+    'reconciliation: same leaf changed directly and through event log is a conflict');
+
+  const proposed = fs.readFileSync(conflictFile, 'utf8').replace('- direct edit', '- proposed publish');
+  const gated = beginTransaction(conflict).addOperation({ type: 'test.publish' }).publishRoot('root-2-technical.md', proposed);
+  let dirtyError = null;
+  try { gated.commit(); } catch (error) { dirtyError = error; }
+  ok(dirtyError instanceof DirtyViewError && dirtyError.recoveryCopies.every((file) => fs.existsSync(file)),
+    'dirty-view gate: dirty publication is refused and recovery copy retained');
+  fs.rmSync(conflict, { recursive: true, force: true });
+
+  const allowed = fs.mkdtempSync(path.join(os.tmpdir(), 'urdr-selftest-gate-clean-'));
+  fs.writeFileSync(path.join(allowed, 'root-2-technical.md'), '# Root-2\n\n## APIs\n\n- original\n');
+  fs.writeFileSync(path.join(allowed, 'root-3-decisions.md'), '# Root-3\n\n## Rules\n\n- original rule\n');
+  importMarkdown(allowed);
+  const allowedContent = fs.readFileSync(path.join(allowed, 'root-2-technical.md'), 'utf8');
+  const allowedDecision = fs.readFileSync(path.join(allowed, 'root-3-decisions.md'), 'utf8');
+  const technicalNext = allowedContent.replace('- original', '- generation two');
+  const decisionNext = allowedDecision.replace('- original rule', '- generation two rule');
+  const allowedState = readCommittedState(allowed);
+  const technicalLeaf = allowedState.leaves.get(parseMarkdown(allowedContent).leaves[0].id);
+  const decisionLeaf = allowedState.leaves.get(parseMarkdown(allowedDecision).leaves[0].id);
+  const allowedTx = beginTransaction(allowed)
+    .upsertLeaf({ ...technicalLeaf, text: '- generation two', contentHash: hashContent('- generation two') })
+    .upsertLeaf({ ...decisionLeaf, text: '- generation two rule', contentHash: hashContent('- generation two rule') })
+    .publishRoot('root-2-technical.md', technicalNext)
+    .publishRoot('root-3-decisions.md', decisionNext);
+  const allowedResult = allowedTx.commit();
+  ok(Boolean(allowedResult.commit), 'dirty-view gate: clean publication is allowed');
+  const publishedGeneration = readPublishedGeneration(allowed);
+  ok(/generation two/.test(publishedGeneration.files.get('root-2-technical.md'))
+    && /generation two rule/.test(publishedGeneration.files.get('root-3-decisions.md'))
+    && readPublishedRoot(allowed, 'root-2-technical.md') === publishedGeneration.files.get('root-2-technical.md'),
+  'publish: event-aware reader sees one complete multi-file generation');
+  fs.rmSync(allowed, { recursive: true, force: true });
+}
+
+// ── hash-chain corruption and truncation ─────────────────────
+{
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'urdr-selftest-chain-'));
+  fs.writeFileSync(path.join(dir, 'root-2-technical.md'), '# Root-2\n\n## APIs\n\n- initial\n');
+  importMarkdown(dir);
+  const logFile = path.join(dir, '.urdr', 'events.jsonl');
+  const healthy = readEventLog(dir);
+  ok(healthy.records.every((record) => record.schemaVersion === 1)
+    && healthy.records.some((record) => record.kind === 'commit')
+    && healthy.records.every((record, index) => record.prevHash === (healthy.records[index - 1]?.hash || null)),
+  'event log: records are schema-versioned, committed, and hash-chained');
+  const original = fs.readFileSync(logFile, 'utf8');
+  const lines = original.trimEnd().split('\n');
+  const changed = JSON.parse(lines[0]);
+  changed.timestamp = 'tampered';
+  lines[0] = JSON.stringify(changed);
+  fs.writeFileSync(logFile, `${lines.join('\n')}\n`);
+  ok(readEventLog(dir).errors.some((error) => error.code === 'hash-chain-corruption'),
+    'event log: hash-chain corruption is detected');
+
+  fs.writeFileSync(logFile, original.slice(0, -7));
+  const truncated = readEventLog(dir);
+  ok(truncated.tailIssue != null && truncated.errors.some((error) => error.code === 'log-truncated'),
+    'event log: incomplete final line is reported without crashing');
+
+  fs.writeFileSync(logFile, `${original}{"incomplete"`);
+  const recoverable = readEventLog(dir);
+  ok(recoverable.warnings.some((warning) => warning.code === 'truncated-tail') && recoverable.integrity,
+    'event log: unanchored incomplete tail is recognized as recoverable');
+  beginTransaction(dir).addOperation({ type: 'test.after-recovery' }).commit();
+  ok(readEventLog(dir).integrity, 'event log: next append recovers an incomplete unanchored tail');
+  fs.rmSync(dir, { recursive: true, force: true });
 }
 
 // ── independent lease keeper ────────────────────────────────────────

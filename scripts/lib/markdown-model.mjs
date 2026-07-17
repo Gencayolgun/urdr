@@ -284,6 +284,26 @@ export function parseMarkdown(content) {
 
   if (currentBranch) currentBranch.endLine = lines.length;
   nodes.sort((a, b) => a.startLine - b.startLine || a.endLine - b.endLine);
+
+  for (const item of metadata) {
+    const next = leaves.find((candidate) => candidate.startLine > item.endLine
+      && originalLines.slice(item.endLine, candidate.startLine - 1).every((line) => !line.trim() || /^\s*<!--\s*urdr\s*:/i.test(line)));
+    if (!next) continue;
+    item.leaf = next;
+    next.metadata ||= [];
+    next.metadata.push(item);
+  }
+  for (const item of leaves) {
+    const values = (item.metadata || []).map((entry) => entry.value);
+    const ids = values.filter((value) => /^id:/i.test(value)).map((value) => value.slice(value.indexOf(':') + 1).trim());
+    item.id = ids.length === 1 ? ids[0] : null;
+    item.edgeTargets = values.filter((value) => /^edge:/i.test(value)).map((value) => {
+      const encoded = value.slice(value.indexOf(':') + 1).trim();
+      const indexed = encoded.match(/^(\d+):(.+)$/);
+      return indexed ? { index: Number(indexed[1]), targetId: indexed[2].trim() } : { index: null, targetId: encoded };
+    }).filter((edge) => edge.targetId);
+    item.edgeTargetIds = item.edgeTargets.map((edge) => edge.targetId);
+  }
   return { source, newline, lines: originalLines, headings, branches, leaves, placeholders, metadata, nodes };
 }
 

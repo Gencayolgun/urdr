@@ -28,7 +28,7 @@ export const FILE_METADATA_GUARANTEES = Object.freeze({
   win32: 'The replacement inherits ACLs from the directory; the prior file ACL and DOS attributes are not preserved.',
 });
 
-function injectFault(opts, stage) {
+export function injectFault(opts, stage) {
   if (opts.faultAt === stage) throw new Error(`fault injection: ${stage}`);
   if (opts.faultInjector) opts.faultInjector(stage);
 }
@@ -86,15 +86,16 @@ function fsyncDirectory(directory) {
   finally { fs.closeSync(fd); }
 }
 
-function atomicReplace(target, content, lock, opts) {
-  const stat = fs.statSync(target);
+export function atomicReplaceFile(target, content, lock, opts = {}) {
+  let stat = null;
+  try { stat = fs.statSync(target); } catch (error) { if (error.code !== 'ENOENT') throw error; }
   const tmp = path.join(path.dirname(target), `.${path.basename(target)}.tmp-${process.pid}-${crypto.randomUUID()}`);
   let fd;
   let renamed = false;
   try {
-    fd = fs.openSync(tmp, fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY, stat.mode);
+    fd = fs.openSync(tmp, fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY, stat?.mode ?? 0o600);
     fs.writeFileSync(fd, content, 'utf8');
-    if (process.platform !== 'win32') fs.fchmodSync(fd, stat.mode & 0o7777);
+    if (process.platform !== 'win32' && stat) fs.fchmodSync(fd, stat.mode & 0o7777);
     injectFault(opts, 'before-fsync');
     fs.fsyncSync(fd);
     fs.closeSync(fd);
@@ -149,7 +150,7 @@ export function appendLeaf(memoryDir, rootFile, branch, leafText, opts = {}) {
     assertLeaseOwned(lock);
     const content = fs.readFileSync(target, 'utf8');
     const next = insertLeaf(content, branch, leafText);
-    atomicReplace(target, next, lock, opts);
+    atomicReplaceFile(target, next, lock, opts);
     return { file: rootFile, branch, bytes: Buffer.byteLength(next) };
   } finally {
     releaseLeaseLock(lock);
