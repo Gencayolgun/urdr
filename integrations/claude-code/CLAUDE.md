@@ -83,14 +83,14 @@ When information belongs to multiple roots:
 ## Maintenance
 
 ```bash
-# Run growth audit
-./scripts/check-growth.sh
+# Run the memory health audit
+node ./scripts/lint.mjs ./memory
 
 # Init memory in a new project
 ./scripts/init.sh
 
-# Restructure branches
-./scripts/migrate.sh
+# Inspect transactional restructuring operations
+node ./scripts/migrate.mjs --help
 ```
 
 ---

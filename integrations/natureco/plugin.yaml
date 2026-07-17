@@ -29,12 +29,8 @@ plugin:
         path: "{{memory_dir}}"
         roots:
           - 0-index.md
-          - 1-kisisel.md
-          - 2-teknik.md
-          - 3-kararlar.md
-        protocols:
-          - architecture.md
-          - cross-cutting.md
+        # Domain roots and protocols remain registered below and are loaded on demand
+        # after the index routes the query; loading all roots defeats fast retrieval.
 
     on_session_end:
       - action: save_memory

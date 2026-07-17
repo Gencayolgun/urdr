@@ -95,10 +95,10 @@ my-memory/
 |-------|-------------|
 | **OpenCode** | Copy `integrations/opencode/SKILL.md` to your `.opencode/skills/` dir |
 | **Claude Code** | `cp integrations/claude-code/CLAUDE.md ./my-project/CLAUDE.md` |
-| **OpenClaw** | Symlink roots into your workspace: `ln -sf my-memory/root-1-topics.md MEMORY.md` |
+| **OpenClaw** | Use `integrations/openclaw/README.md` to expose the index as `MEMORY.md` and keep domain roots under `memory/` |
 | **NatureCo CLI** | Copy `integrations/natureco/plugin.yaml` into your NatureCo config |
 | **Hermes** | Copy `integrations/hermes/skill.yaml` into your Hermes skills dir |
-| **Other agent?** | Just point it to read the 4 `root-*.md` files at session start. See `AGENTS.md` |
+| **Other agent?** | Load `root-0-index.md` at session start, then read the routed domain root on demand. See `AGENTS.md` |
 
 **Can't find your agent?** Doesn't matter. Urðr is just Markdown files. Any agent that can read files can use it — tell it to load `root-0-index.md` at session start and you're done.
 
@@ -131,15 +131,14 @@ urdr/
 │   ├── root-1-topics.md
 │   ├── root-2-technical.md
 │   ├── root-3-decisions.md
-│   ├── kók-0-indeks.md
-│   ├── kók-1-konular.md
-│   ├── kók-2-teknik.md
-│   ├── kók-3-kararlar.md
+│   ├── kök-0-indeks.md
+│   ├── kök-1-konular.md
+│   ├── kök-2-teknik.md
+│   ├── kök-3-kararlar.md
 │   └── agent-personality.md
 │
 ├── protocols/              # Architecture & protocol docs
 │   ├── architecture.md        # English
-│   ├── mimari.md              # Türkçe
 │   ├── cross-cutting.md       # Cross-domain protocol
 │   ├── growth-rules.md        # When & how to grow
 │   └── hard-error-protocol.md # Error recovery
@@ -153,8 +152,7 @@ urdr/
 │
 ├── scripts/                # Utility scripts (cross-platform)
 │   ├── init.sh             # Initialize memory tree
-│   ├── check-growth.sh     # DEPRECATED → use lint.mjs (bash-only, no Windows)
-│   ├── migrate.sh          # Restructure branches
+│   ├── migrate.mjs         # Transactional branch/root restructuring
 │   ├── search.mjs          # Last-resort branch-aware search (Node, LLM-free)
 │   ├── bench.mjs           # Retrieval/fidelity benchmark (Node, LLM-free)
 │   ├── append.mjs          # Concurrency-safe leaf writer (lock + atomic)
@@ -162,9 +160,7 @@ urdr/
 │   └── selftest.mjs        # Exercises every tool (CI, 3-OS matrix)
 │
 └── examples/               # Practical use cases
-    ├── basic-setup/
-    ├── project-tracking/
-    └── technical-reference/
+    └── basic-setup/
 ```
 
 ---
@@ -253,16 +249,16 @@ Verified: 15 concurrent writers → 15 leaves, zero loss, file integrity intact 
 
 ## Health Lint (`scripts/lint.mjs`)
 
-A cross-platform successor to `check-growth.sh` (bash — doesn't run on stock Windows). One command audits the failure modes that erode retrieval as the tree grows, and exits non-zero on errors (CI/pre-commit guard):
+A cross-platform command audits the failure modes that erode retrieval as the tree grows and exits non-zero on errors (CI/pre-commit guard):
 
 ```bash
 node scripts/lint.mjs ./my-memory
 ```
 
-1. **Growth** — root > 9 branches, branch > 50 leaves → split signals
+1. **Growth** — root with 9+ branches, branch with 50+ leaves → split signals
 2. **Index bloat** — flags a `root-0-index` that stores leaves instead of mapping (it's read on every retrieval)
 3. **bkz: references** — broken refs (points to a missing root) + over-deep chains
-4. **Duplication** — near-identical leaves in the same root (Jaccard ≥ 0.85) — the "same fact in 5 slightly-different places" drift
+4. **Duplication** — near-identical leaves across the tree — the "same fact in 5 slightly-different places" drift
 
 ## Design Philosophy
 

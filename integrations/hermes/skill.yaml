@@ -32,17 +32,17 @@ skill:
       - id: root-1
         file: root-1-topics.md
         purpose: "People, projects, broad subjects"
-        load: always
+        load: on_demand
 
       - id: root-2
         file: root-2-technical.md
         purpose: "Systems, APIs, technical references"
-        load: always
+        load: on_demand
 
       - id: root-3
         file: root-3-decisions.md
         purpose: "Decisions, constraints, lessons learned"
-        load: always
+        load: on_demand
 
     personality:
       file: agent-personality.md
@@ -79,7 +79,7 @@ skill:
         - "Select root"
         - "Pick branch"
         - "Read leaf"
-      fallback: "grep across all roots"
+      fallback: "node scripts/search.mjs \"<keyword>\" <memory-dir>"
 
     audit:
       description: "Check memory health"

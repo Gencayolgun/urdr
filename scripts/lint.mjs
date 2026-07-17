@@ -1,147 +1,169 @@
 #!/usr/bin/env node
-/**
- * lint.mjs — Urðr memory health audit (cross-platform, LLM-free)
- *
- * A cross-platform successor to check-growth.sh (bash → does not run on stock Windows).
- * Audits a memory tree for the failure modes that erode retrieval reliability as it scales,
- * and exits non-zero if any ERROR-level issue is found (usable as a CI/pre-commit guard):
- *
- *   1. Growth      — root > 9 branches (Miller's Law), branch > 50 leaves → split signals
- *   2. Index bloat — root-0-index should be a MAP (branch→location), not store leaves;
- *                    flag if it grows content-heavy (the index is read every retrieval)
- *   3. bkz: refs   — broken references (points to a root file that doesn't exist) and
- *                    chains deeper than 1 hop (A → bkz: B → bkz: C makes retrieval expensive)
- *   4. Duplication — near-identical leaves in the same root (Jaccard ≥ 0.85) — the
- *                    "same fact in 5 places, subtly different" drift the tree is meant to prevent
- *
- * Usage:  node lint.mjs [memory-dir] [--json] [--verbose]
- */
-
+/** Urðr memory health audit (cross-platform, LLM-free). */
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { readCommittedState } from './lib/event-log.mjs';
 import { listRootFiles, parseMarkdown } from './lib/markdown-model.mjs';
 
-// Urðr `root-N-*`/`kök-N-*` AND platform-native `N-name` roots (e.g. NatureCo `1-kisisel.md`).
 const MAX_BRANCHES = 9;
 const WARN_LEAVES = 30;
 const MAX_LEAVES = 50;
 const DUP_THRESHOLD = 0.85;
-const INDEX_LEAF_WARN = 15; // an index with this many leaf-like lines is storing, not mapping
+const INDEX_LEAF_WARN = 15;
 
-/** Parse a root file into { file, isIndex, branches: [{name, leaves:[{text,line}]}] }. */
 function parseFile(file) {
   const name = path.basename(file);
-  const isIndex = /-0-/.test(name) || /index|indeks/i.test(name);
   const model = parseMarkdown(fs.readFileSync(file, 'utf8'));
-  const branches = model.branches.map((branch) => ({
-    name: branch.name,
-    leaves: branch.leaves.map((leaf) => ({ text: leaf.text, line: leaf.startLine })),
-  }));
-  return { file: name, isIndex, branches };
+  return {
+    file: name,
+    isIndex: /-0-|^0[-_]|index|indeks/i.test(name),
+    branches: model.branches.map((branch) => ({
+      name: branch.name,
+      leaves: branch.leaves.map((leaf) => ({
+        id: leaf.id, text: leaf.text, line: leaf.startLine,
+        referenceOnly: /\bbkz:/iu.test(leaf.text),
+      })),
+    })),
+  };
 }
 
-const STOP = new Set(['the', 've', 'and', 'for', 'with', 'chose', 'alt', 'none', 'ok', 'to', 'a', 'of', 'in', 'on', 'is', 'bkz']);
+const STOP = new Set(['the', 've', 'and', 'for', 'with', 'chose', 'alt', 'none', 'ok', 'to', 'bir', 'ile', 'için', 'of', 'in', 'on', 'is', 'bkz']);
 function tokens(text) {
-  return new Set(
-    text.toLowerCase()
-      .replace(/\*\*|__|`|\|/g, ' ')
-      .replace(/\b\d{2}\.\d{2}\.\d{4}\b/g, ' ') // drop dates (format noise)
-      .split(/[^a-z0-9çğıöşü-]+/i)
-      .filter((w) => w.length > 2 && !STOP.has(w))
-  );
+  return new Set(String(text).toLocaleLowerCase()
+    .replace(/\*\*|__|`|\|/g, ' ')
+    .replace(/\b\d{2}\.\d{2}\.\d{4}\b/g, ' ')
+    .split(/[^\p{L}\p{N}-]+/u)
+    .filter((word) => word.length > 2 && !STOP.has(word)));
 }
 function jaccard(a, b) {
   if (a.size === 0 || b.size === 0) return 0;
-  let inter = 0;
-  for (const x of a) if (b.has(x)) inter++;
-  return inter / (a.size + b.size - inter);
+  let intersection = 0;
+  for (const token of a) if (b.has(token)) intersection++;
+  return intersection / (a.size + b.size - intersection);
+}
+
+function addReferenceFindings(dir, findings) {
+  const logFile = path.join(dir, '.urdr', 'events.jsonl');
+  if (!fs.existsSync(logFile)) return;
+  const state = readCommittedState(dir);
+  const leafLocation = (id) => {
+    const leaf = state.leaves.get(id);
+    return leaf ? `${leaf.file} › ## ${leaf.branch || '(no branch)'}` : id;
+  };
+  const outgoing = new Map();
+  for (const edge of state.edges.values()) {
+    if (edge.status !== 'resolved' || !edge.targetId || !state.leaves.has(edge.sourceId) || !state.leaves.has(edge.targetId)) {
+      findings.push({ level: 'error', code: 'broken-ref', msg: `${leafLocation(edge.sourceId)}: unresolved stable-ID reference ${edge.id} (${edge.status})` });
+      continue;
+    }
+    const targets = outgoing.get(edge.sourceId) || new Set();
+    targets.add(edge.targetId);
+    outgoing.set(edge.sourceId, targets);
+  }
+  const reported = new Set();
+  for (const [source, middleIds] of outgoing) {
+    for (const middle of middleIds) {
+      for (const target of outgoing.get(middle) || []) {
+        const key = `${source}\0${middle}\0${target}`;
+        if (reported.has(key)) continue;
+        reported.add(key);
+        findings.push({ level: 'warn', code: 'reference-chain', msg: `${leafLocation(source)} → ${leafLocation(middle)} → ${leafLocation(target)}: bkz: chain exceeds one hop` });
+      }
+    }
+  }
+}
+
+function addDuplicateFindings(parsed, findings) {
+  const leaves = parsed.flatMap((root) => root.branches.flatMap((branch) => branch.leaves
+    .filter((leaf) => !leaf.referenceOnly)
+    .map((leaf) => ({ ...leaf, file: root.file, branch: branch.name, tokenSet: tokens(leaf.text) }))));
+  const index = new Map();
+  const candidates = new Set();
+  for (let i = 0; i < leaves.length; i++) {
+    for (const token of leaves[i].tokenSet) {
+      for (const prior of index.get(token) || []) candidates.add(`${prior}:${i}`);
+      const ids = index.get(token) || [];
+      ids.push(i);
+      index.set(token, ids);
+    }
+  }
+  for (const pair of candidates) {
+    const [i, j] = pair.split(':').map(Number);
+    const similarity = jaccard(leaves[i].tokenSet, leaves[j].tokenSet);
+    if (similarity < DUP_THRESHOLD) continue;
+    findings.push({ level: 'warn', code: 'duplication', msg: `near-duplicate (${(similarity * 100).toFixed(0)}%) — ${leaves[i].file} › ## ${leaves[i].branch} L${leaves[i].line} ≈ ${leaves[j].file} › ## ${leaves[j].branch} L${leaves[j].line}. Keep one primary + bkz:.` });
+  }
+}
+
+export function validateTargetBranch(dir, targetFile, targetBranch) {
+  const resolvedDir = fs.realpathSync(dir);
+  const resolvedFile = fs.realpathSync(path.resolve(resolvedDir, targetFile));
+  if (path.dirname(resolvedFile) !== resolvedDir) throw new Error(`target root escapes memory directory: ${targetFile}`);
+  const model = parseMarkdown(fs.readFileSync(resolvedFile, 'utf8'));
+  const wanted = String(targetBranch).replace(/^##\s*/, '').trim().toLocaleLowerCase();
+  const branch = model.branches.find((item) => item.name.trim().toLocaleLowerCase() === wanted);
+  if (!branch) throw new Error(`target branch does not exist: ${path.basename(resolvedFile)} / ${targetBranch}`);
+  return branch;
 }
 
 export function lintTree(dir) {
   const files = listRootFiles(dir);
   const findings = [];
   const add = (level, code, msg) => findings.push({ level, code, msg });
-  if (files.length === 0) { add('error', 'no-roots', `no root-*.md files in ${dir}`); return { findings, files: 0 }; }
-
+  if (files.length === 0) { add('error', 'no-roots', `no root files in ${dir}`); return { findings, files: 0 }; }
   const parsed = files.map(parseFile);
-  const rootFileNames = new Set(parsed.map((p) => p.file.toLowerCase()));
-
-  for (const p of parsed) {
-    // 1) Growth
-    if (p.branches.length > MAX_BRANCHES) {
-      add('warn', 'root-branches', `${p.file}: ${p.branches.length} branches (> ${MAX_BRANCHES}) — consider splitting into a new root`);
+  const rootNames = new Set(parsed.map((root) => root.file.toLocaleLowerCase()));
+  for (const root of parsed) {
+    if (root.branches.length >= MAX_BRANCHES) add('warn', 'root-branches', `${root.file}: ${root.branches.length} branches (>= ${MAX_BRANCHES}) — consider splitting into a new root`);
+    for (const branch of root.branches) {
+      if (branch.leaves.length >= MAX_LEAVES) add('error', 'branch-leaves', `${root.file} › ## ${branch.name}: ${branch.leaves.length} leaves (>= ${MAX_LEAVES}) — split into sub-branches`);
+      else if (branch.leaves.length >= WARN_LEAVES) add('warn', 'branch-leaves', `${root.file} › ## ${branch.name}: ${branch.leaves.length} leaves (>= ${WARN_LEAVES}) — approaching split limit`);
     }
-    for (const b of p.branches) {
-      if (b.leaves.length > MAX_LEAVES) add('error', 'branch-leaves', `${p.file} › ## ${b.name}: ${b.leaves.length} leaves (> ${MAX_LEAVES}) — split into sub-branches`);
-      else if (b.leaves.length > WARN_LEAVES) add('warn', 'branch-leaves', `${p.file} › ## ${b.name}: ${b.leaves.length} leaves (> ${WARN_LEAVES}) — approaching split limit`);
+    if (root.isIndex) {
+      const count = root.branches.reduce((sum, branch) => sum + branch.leaves.length, 0);
+      if (count >= INDEX_LEAF_WARN) add('warn', 'index-bloat', `${root.file}: index holds ${count} content leaves — it should map, not store leaves`);
     }
-
-    // 2) Index bloat
-    if (p.isIndex) {
-      const leafCount = p.branches.reduce((n, b) => n + b.leaves.length, 0);
-      if (leafCount > INDEX_LEAF_WARN) add('warn', 'index-bloat', `${p.file}: index holds ${leafCount} content lines — it should MAP (branch→location), not store leaves (it's read on every retrieval)`);
-    }
-
-    // 3) bkz: references
-    for (const b of p.branches) {
-      for (const leaf of b.leaves) {
-        if (!/\bbkz:/i.test(leaf.text)) continue;
-        // extract referenced root file tokens like "root-2", "kök-3"
-        const refs = leaf.text.match(/(root|kök|kok)-\d+[a-zçğıöşü-]*(?:\.md)?/gi) || [];
+    // Legacy trees have no event graph yet. Preserve broken-root diagnostics during
+    // migration, but deliberately do not infer graph depth from this prose.
+    if (!fs.existsSync(path.join(dir, '.urdr', 'events.jsonl'))) {
+      for (const branch of root.branches) for (const leaf of branch.leaves) {
+        if (!leaf.referenceOnly) continue;
+        const refs = leaf.text.match(/(?:root|kök|kok)-\d+[\p{L}\p{N}-]*(?:\.md)?/giu) || [];
         for (const ref of refs) {
-          const fn = (ref.endsWith('.md') ? ref : ref + '.md').toLowerCase();
-          const exists = [...rootFileNames].some((rf) => rf.startsWith(fn.replace(/\.md$/, '')));
-          if (!exists) add('error', 'broken-ref', `${p.file} › ## ${b.name} (line ${leaf.line}): bkz: points to missing "${ref}"`);
-        }
-        // chain depth: a leaf that both RECEIVES focus and itself gives bkz is fine (1 hop);
-        // flag if the referenced target ALSO contains a bkz: (2+ hops → expensive retrieval)
-      }
-    }
-
-    // 4) Duplication (within same root, pairwise Jaccard)
-    const allLeaves = p.branches.flatMap((b) => b.leaves.map((l) => ({ ...l, branch: b.name })));
-    const toks = allLeaves.map((l) => tokens(l.text));
-    for (let i = 0; i < allLeaves.length; i++) {
-      for (let j = i + 1; j < allLeaves.length; j++) {
-        const sim = jaccard(toks[i], toks[j]);
-        if (sim >= DUP_THRESHOLD) {
-          add('warn', 'duplication', `${p.file}: near-duplicate (${(sim * 100).toFixed(0)}%) — "## ${allLeaves[i].branch}" L${allLeaves[i].line} ≈ "## ${allLeaves[j].branch}" L${allLeaves[j].line}. Keep one primary + bkz:.`);
+          const stem = ref.replace(/\.md$/i, '').toLocaleLowerCase();
+          if (![...rootNames].some((name) => name.startsWith(stem))) add('error', 'broken-ref', `${root.file} › ## ${branch.name} (line ${leaf.line}): bkz: points to missing "${ref}"`);
         }
       }
     }
   }
+  addReferenceFindings(dir, findings);
+  addDuplicateFindings(parsed, findings);
   return { findings, files: files.length };
 }
 
-// ── CLI ────────────────────────────────────────────────────────────
-// realpathSync resolves symlinks (macOS /tmp → /private/tmp) so "run as CLI" is detected.
 function isMain() {
-  try {
-    return fs.realpathSync(fileURLToPath(import.meta.url)) === fs.realpathSync(process.argv[1] || '.');
-  } catch { return false; }
+  try { return fs.realpathSync(fileURLToPath(import.meta.url)) === fs.realpathSync(process.argv[1] || '.'); }
+  catch { return false; }
 }
 
 if (isMain()) {
   const argv = process.argv.slice(2);
-  const dir = argv.find((a) => !a.startsWith('--')) || process.cwd();
+  const unknown = argv.filter((arg) => arg.startsWith('--') && !['--json', '--verbose', '--fail-on-warn'].includes(arg));
+  if (unknown.length) { console.error(`unknown option: ${unknown[0]}`); process.exit(2); }
+  const dir = argv.find((arg) => !arg.startsWith('--')) || process.cwd();
   const json = argv.includes('--json');
+  const failOnWarn = argv.includes('--fail-on-warn');
   const { findings, files } = lintTree(dir);
-  const errors = findings.filter((f) => f.level === 'error');
-  const warns = findings.filter((f) => f.level === 'warn');
-
-  if (json) {
-    console.log(JSON.stringify({ dir, files, errors: errors.length, warnings: warns.length, findings }, null, 2));
-  } else {
-    console.log(`\n  🌳 Urðr Memory Lint — ${files} root file(s)\n  ${'─'.repeat(56)}`);
-    if (findings.length === 0) {
-      console.log('  ✓ Healthy — no growth, reference, or duplication issues.');
-    } else {
-      for (const f of errors) console.log(`  ✗ [${f.code}] ${f.msg}`);
-      for (const f of warns) console.log(`  ⚠ [${f.code}] ${f.msg}`);
-      console.log(`\n  ${errors.length} error(s), ${warns.length} warning(s).`);
-    }
+  const errors = findings.filter((finding) => finding.level === 'error');
+  const warnings = findings.filter((finding) => finding.level === 'warn');
+  if (json) console.log(JSON.stringify({ dir, files, errors: errors.length, warnings: warnings.length, findings }, null, 2));
+  else {
+    console.log(`\n  Urðr Memory Lint — ${files} root file(s)\n  ${'─'.repeat(56)}`);
+    if (!findings.length) console.log('  ✓ Healthy — no growth, reference, or duplication issues.');
+    for (const finding of [...errors, ...warnings]) console.log(`  ${finding.level === 'error' ? '✗' : '⚠'} [${finding.code}] ${finding.msg}`);
+    if (findings.length) console.log(`\n  ${errors.length} error(s), ${warnings.length} warning(s).`);
     console.log('');
   }
-  process.exit(errors.length > 0 ? 1 : 0);
+  process.exit(errors.length || (failOnWarn && warnings.length) ? 1 : 0);
 }

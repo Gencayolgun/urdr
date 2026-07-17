@@ -95,7 +95,7 @@ On session start:
 
 ```bash
 cd ~/projects/taskflow/.memory
-./scripts/check-growth.sh
+node ~/urdr/scripts/lint.mjs .
 ```
 
 ---

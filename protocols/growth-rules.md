@@ -153,11 +153,10 @@ For entries older than 6 months:
 
 ## 6. Automated Growth Checking
 
-The `check-growth.sh` script automates the audit:
+The cross-platform linter automates the audit:
 
 ```bash
-# Run from the memory directory
-./check-growth.sh
+node /path/to/urdr/scripts/lint.mjs /path/to/memory
 
 # Output:
 # 📊 Urðr Growth Audit — 04.07.2026
@@ -183,7 +182,7 @@ The `check-growth.sh` script automates the audit:
 
 ## 7. Migration Protocol
 
-When restructuring is needed, use `migrate.sh` or follow these steps:
+When restructuring is needed, use `node scripts/migrate.mjs --help` to select a transactional migration operation, or follow these steps:
 
 ### 7.1 Moving a Branch to a New Root
 

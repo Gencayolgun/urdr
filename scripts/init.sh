@@ -1,192 +1,126 @@
 #!/usr/bin/env bash
-#
-# init.sh — Initialize Urðr Memory Tree
-#
-# Usage:
-#   ./init.sh                    # Interactive (asks for language, path)
-#   ./init.sh --path ~/myproject/memory  # Specify target directory
-#   ./init.sh --lang en          # English only (default)
-#   ./init.sh --lang tr          # Turkish only
-#   ./init.sh --lang both        # Both English and Turkish
-#
-# Description:
-#   Creates a new Urðr memory tree in the specified directory.
-#   Copies root templates, personality, and creates initial branch structure.
-#
-
+# Initialize one English or Turkish Urðr tree without overwriting existing data.
 set -euo pipefail
 
-# ── Configuration ──────────────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(dirname "$SCRIPT_DIR")"
 TEMPLATES_DIR="$REPO_ROOT/templates"
 PROTOCOLS_DIR="$REPO_ROOT/protocols"
-INTEGRATIONS_DIR="$REPO_ROOT/integrations"
 
-# ── Color output ───────────────────────────────────────────────────
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m' # No Color
-
-info()  { echo -e "${BLUE}ℹ${NC} $1"; }
-ok()    { echo -e "${GREEN}✓${NC} $1"; }
-warn()  { echo -e "${YELLOW}⚠${NC} $1"; }
-error() { echo -e "${RED}✗${NC} $1"; }
-
-# ── Defaults ───────────────────────────────────────────────────────
 TARGET_DIR=""
 LANG="en"
 AGENT_NAME=""
 USER_NAME=""
 
-# ── Parse arguments ────────────────────────────────────────────────
+die() { printf 'init: %s\n' "$1" >&2; exit 1; }
+usage() {
+  cat <<'EOF'
+Usage: ./scripts/init.sh [options]
+  --path <dir>          Target directory (default: ./memory)
+  --lang <en|tr>        Naming language (default: en; "both" is not supported)
+  --agent-name <name>   Agent name for agent-personality.md
+  --user-name <name>    User name for agent-personality.md
+EOF
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --path)
-      TARGET_DIR="$2"
+    --path|--lang|--agent-name|--user-name)
+      [[ $# -ge 2 ]] || die "$1 requires a value"
+      case "$1" in
+        --path) TARGET_DIR="$2" ;;
+        --lang) LANG="$2" ;;
+        --agent-name) AGENT_NAME="$2" ;;
+        --user-name) USER_NAME="$2" ;;
+      esac
       shift 2
       ;;
-    --lang)
-      LANG="$2"
-      shift 2
-      ;;
-    --agent-name)
-      AGENT_NAME="$2"
-      shift 2
-      ;;
-    --user-name)
-      USER_NAME="$2"
-      shift 2
-      ;;
-    --help|-h)
-      echo "Usage: ./init.sh [options]"
-      echo ""
-      echo "Options:"
-      echo "  --path <dir>       Target directory (default: ./memory)"
-      echo "  --lang <en|tr|both> Language (default: en)"
-      echo "  --agent-name <name> Agent name for personality template"
-      echo "  --user-name <name>  User name for personality template"
-      echo "  --help, -h         Show this help"
-      exit 0
-      ;;
-    *)
-      error "Unknown option: $1"
-      exit 1
-      ;;
+    --help|-h) usage; exit 0 ;;
+    *) die "unknown option: $1" ;;
   esac
 done
 
-# ── Interactive prompts ────────────────────────────────────────────
+[[ "$LANG" == "en" || "$LANG" == "tr" ]] || die "--lang must be 'en' or 'tr'"
+command -v node >/dev/null 2>&1 || die "node is required"
+command -v git >/dev/null 2>&1 || die "git is required"
+
 if [[ -z "$TARGET_DIR" ]]; then
   read -rp "Memory directory [./memory]: " TARGET_DIR
   TARGET_DIR="${TARGET_DIR:-./memory}"
 fi
-
-if [[ "$LANG" == "en" && -z "$AGENT_NAME" ]]; then
+if [[ -z "$AGENT_NAME" ]]; then
   read -rp "Agent name [Agent]: " AGENT_NAME
   AGENT_NAME="${AGENT_NAME:-Agent}"
 fi
-
 if [[ -z "$USER_NAME" ]]; then
   read -rp "Your name [User]: " USER_NAME
   USER_NAME="${USER_NAME:-User}"
 fi
 
-# ── Create target directory ────────────────────────────────────────
-mkdir -p "$TARGET_DIR"
-TARGET_DIR="$(cd "$TARGET_DIR" && pwd)"
-ok "Target: $TARGET_DIR"
+# Resolve without creating the target. Node handles .. and platform-specific separators.
+TARGET_DIR="$(node -e 'process.stdout.write(require("path").resolve(process.argv[1]))' "$TARGET_DIR")"
+TARGET_PARENT="$(dirname "$TARGET_DIR")"
 
-# ── Copy templates ─────────────────────────────────────────────────
-copy_if_exists() {
-  local src="$1"
-  local dest="$2"
-  if [[ -f "$src" ]]; then
-    cp "$src" "$dest"
-    ok "Created: $(basename "$dest")"
-  else
-    warn "Template not found: $src"
-  fi
-}
+if [[ "$LANG" == "en" ]]; then
+  ROOT_SOURCES=(root-0-index.md root-1-topics.md root-2-technical.md root-3-decisions.md)
+else
+  ROOT_SOURCES=(kök-0-indeks.md kök-1-konular.md kök-2-teknik.md kök-3-kararlar.md)
+fi
+SOURCES=("${ROOT_SOURCES[@]}" agent-personality.md)
 
-case "$LANG" in
-  en)
-    info "Installing English templates..."
-    copy_if_exists "$TEMPLATES_DIR/root-0-index.md" "$TARGET_DIR/root-0-index.md"
-    copy_if_exists "$TEMPLATES_DIR/root-1-topics.md" "$TARGET_DIR/root-1-topics.md"
-    copy_if_exists "$TEMPLATES_DIR/root-2-technical.md" "$TARGET_DIR/root-2-technical.md"
-    copy_if_exists "$TEMPLATES_DIR/root-3-decisions.md" "$TARGET_DIR/root-3-decisions.md"
-    copy_if_exists "$TEMPLATES_DIR/agent-personality.md" "$TARGET_DIR/agent-personality.md"
-    ;;
-  tr)
-    info "Installing Turkish templates..."
-    copy_if_exists "$TEMPLATES_DIR/kök-0-indeks.md" "$TARGET_DIR/kök-0-indeks.md"
-    copy_if_exists "$TEMPLATES_DIR/kök-1-konular.md" "$TARGET_DIR/kök-1-konular.md"
-    copy_if_exists "$TEMPLATES_DIR/kök-2-teknik.md" "$TARGET_DIR/kök-2-teknik.md"
-    copy_if_exists "$TEMPLATES_DIR/kök-3-kararlar.md" "$TARGET_DIR/kök-3-kararlar.md"
-    copy_if_exists "$TEMPLATES_DIR/agent-personality.md" "$TARGET_DIR/agent-personality.md"
-    ;;
-  both)
-    info "Installing both English and Turkish templates..."
-    copy_if_exists "$TEMPLATES_DIR/root-0-index.md" "$TARGET_DIR/root-0-index.md"
-    copy_if_exists "$TEMPLATES_DIR/root-1-topics.md" "$TARGET_DIR/root-1-topics.md"
-    copy_if_exists "$TEMPLATES_DIR/root-2-technical.md" "$TARGET_DIR/root-2-technical.md"
-    copy_if_exists "$TEMPLATES_DIR/root-3-decisions.md" "$TARGET_DIR/root-3-decisions.md"
-    copy_if_exists "$TEMPLATES_DIR/kök-0-indeks.md" "$TARGET_DIR/kök-0-indeks.md"
-    copy_if_exists "$TEMPLATES_DIR/kök-1-konular.md" "$TARGET_DIR/kök-1-konular.md"
-    copy_if_exists "$TEMPLATES_DIR/kök-2-teknik.md" "$TARGET_DIR/kök-2-teknik.md"
-    copy_if_exists "$TEMPLATES_DIR/kök-3-kararlar.md" "$TARGET_DIR/kök-3-kararlar.md"
-    copy_if_exists "$TEMPLATES_DIR/agent-personality.md" "$TARGET_DIR/agent-personality.md"
-    ;;
-esac
+# Preflight every input and every destination before the first write.
+for name in "${SOURCES[@]}"; do
+  [[ -f "$TEMPLATES_DIR/$name" ]] || die "required template not found: $TEMPLATES_DIR/$name"
+done
+[[ -d "$PROTOCOLS_DIR" ]] || die "protocol directory not found: $PROTOCOLS_DIR"
+shopt -s nullglob
+PROTOCOL_SOURCES=("$PROTOCOLS_DIR"/*.md)
+shopt -u nullglob
+[[ ${#PROTOCOL_SOURCES[@]} -gt 0 ]] || die "no protocol Markdown files found in $PROTOCOLS_DIR"
 
-# ── Customize personality ──────────────────────────────────────────
-PERSONALITY_FILE="$TARGET_DIR/agent-personality.md"
-if [[ -f "$PERSONALITY_FILE" ]]; then
-  if [[ -n "$AGENT_NAME" ]]; then
-    sed -i '' "s/\[Agent Name\]/$AGENT_NAME/g" "$PERSONALITY_FILE" 2>/dev/null || \
-    sed -i "s/\[Agent Name\]/$AGENT_NAME/g" "$PERSONALITY_FILE"
-    ok "Personality: agent name set to '$AGENT_NAME'"
-  fi
-  if [[ -n "$USER_NAME" ]]; then
-    sed -i '' "s/\[User Name\]/$USER_NAME/g" "$PERSONALITY_FILE" 2>/dev/null || \
-    sed -i "s/\[User Name\]/$USER_NAME/g" "$PERSONALITY_FILE"
-    ok "Personality: user name set to '$USER_NAME'"
-  fi
+TARGET_WAS_EMPTY=0
+if [[ -e "$TARGET_DIR" ]]; then
+  [[ -d "$TARGET_DIR" ]] || die "target exists and is not a directory: $TARGET_DIR"
+  shopt -s nullglob dotglob
+  EXISTING=("$TARGET_DIR"/*)
+  shopt -u nullglob dotglob
+  [[ ${#EXISTING[@]} -eq 0 ]] || die "target directory is not empty; refusing to overwrite: $TARGET_DIR"
+  TARGET_WAS_EMPTY=1
 fi
 
-# ── Copy protocols (optional) ──────────────────────────────────────
-if [[ -d "$PROTOCOLS_DIR" ]]; then
-  mkdir -p "$TARGET_DIR/protocols"
-  cp "$PROTOCOLS_DIR"/*.md "$TARGET_DIR/protocols/" 2>/dev/null && \
-    ok "Protocols copied to $TARGET_DIR/protocols/"
+# Detect an enclosing repository even when .git is a file or lives above the direct parent.
+PROBE="$TARGET_PARENT"
+while [[ ! -d "$PROBE" && "$PROBE" != "$(dirname "$PROBE")" ]]; do PROBE="$(dirname "$PROBE")"; done
+if GIT_TOP="$(git -C "$PROBE" rev-parse --show-toplevel 2>/dev/null)"; then
+  die "target would create a nested git repository inside: $GIT_TOP"
 fi
+# Everything below is the commit phase. Prepare a complete sibling tree, then rename it.
+mkdir -p "$TARGET_PARENT"
+STAGE_DIR="$(mktemp -d "$TARGET_PARENT/.urdr-init.XXXXXX")"
+cleanup() { [[ -n "${STAGE_DIR:-}" && -d "$STAGE_DIR" ]] && rm -rf -- "$STAGE_DIR"; }
+trap cleanup EXIT
 
-# ── Initialize git ─────────────────────────────────────────────────
-if [[ ! -d "$TARGET_DIR/.git" ]]; then
-  git -C "$TARGET_DIR" init -q
-  git -C "$TARGET_DIR" add -A
-  git -C "$TARGET_DIR" commit -m "initial: Urðr memory tree initialized" -q
-  ok "Git repository initialized"
-fi
+for name in "${SOURCES[@]}"; do cp -- "$TEMPLATES_DIR/$name" "$STAGE_DIR/$name"; done
+mkdir "$STAGE_DIR/protocols"
+for source in "${PROTOCOL_SOURCES[@]}"; do cp -- "$source" "$STAGE_DIR/protocols/"; done
 
-# ── Summary ────────────────────────────────────────────────────────
-echo ""
-echo -e "${GREEN}══════════════════════════════════════════════════════${NC}"
-echo -e "${GREEN}  Urðr Memory Tree Initialized${NC}"
-echo -e "${GREEN}══════════════════════════════════════════════════════${NC}"
-echo ""
-echo "  Location: $TARGET_DIR"
-echo "  Language: $LANG"
-echo "  Roots:    $(ls "$TARGET_DIR"/root-*.md "$TARGET_DIR"/kök-*.md 2>/dev/null | wc -l | tr -d ' ')"
-echo "  Agent:    ${AGENT_NAME:-default}"
-echo ""
-echo "  Quick start:"
-echo "    cd $TARGET_DIR"
-echo "    ls *.md           # See your roots"
-echo "    code root-0-index.md  # Start organizing"
-echo ""
-echo -e "${BLUE}  Urðr remembers. You focus on building.${NC} 🌳"
-echo ""
+# Use literal JavaScript replacement, not sed replacement syntax, so &, /, \, $, and Unicode are safe.
+node - "$STAGE_DIR/agent-personality.md" "$AGENT_NAME" "$USER_NAME" <<'NODE'
+const fs = require('fs');
+const [file, agent, user] = process.argv.slice(2);
+let content = fs.readFileSync(file, 'utf8');
+content = content.replaceAll('[Agent Name]', agent).replaceAll('[User Name]', user);
+fs.writeFileSync(file, content, 'utf8');
+NODE
+
+git -C "$STAGE_DIR" init -q
+git -C "$STAGE_DIR" add -A
+git -C "$STAGE_DIR" -c user.name=Urdr -c user.email=urdr@localhost commit -m "initial: Urðr memory tree initialized" -q
+
+if [[ $TARGET_WAS_EMPTY -eq 1 ]]; then rmdir -- "$TARGET_DIR"; fi
+mv -- "$STAGE_DIR" "$TARGET_DIR"
+STAGE_DIR=""
+trap - EXIT
+
+printf 'Urðr memory tree initialized\nLocation: %s\nLanguage: %s\nRoots: %s\n' \
+  "$TARGET_DIR" "$LANG" "${#ROOT_SOURCES[@]}"

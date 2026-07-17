@@ -84,7 +84,7 @@ logic:
   - step: "Select root (domain mapping above)"
   - step: "Pick branch (scan ## headings)"
   - step: "Read leaf (specific entry)"
-  fallback: "grep across all roots if path unknown"
+  fallback: "node scripts/search.mjs \"<keyword>\" <memory-dir>"
 ```
 
 ---
@@ -117,7 +117,7 @@ Add to your `opencode.jsonc`:
 
 ```yaml
 weekly_audit:
-  - "Run check-growth.sh"
+  - "Run node scripts/lint.mjs <memory-dir>"
   - "Review and split overgrown branches"
   - "Verify cross-references (bkz: still valid?)"
   - "Mark stale entries [STALE] if > 6 months unverified"

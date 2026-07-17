@@ -11,7 +11,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { searchMemory } from './search.mjs';
 import { appendLeaf, insertLeaf, resolveConfinedTarget } from './append.mjs';
@@ -569,6 +569,23 @@ console.log('\n  🌳 Urðr self-test\n  ' + '─'.repeat(50));
   const c = fs.readFileSync(path.join(dir, 'root-2-technical.md'), 'utf8');
   ok(c.includes(leaf), 'fidelity: stored == intended (unicode + markdown-hostile chars)');
   fs.rmSync(dir, { recursive: true, force: true });
+}
+
+// Rock-focused suites stay isolated so their CLI/process fixtures cannot leak state into
+// the long-running concurrency suite, but they are still part of this canonical proof run.
+for (const [file, label] of [['rock2-selftest.mjs', 'Rock 2'], ['rock3-selftest.mjs', 'Rock 3']]) {
+  const result = spawnSync(process.execPath, [fileURLToPath(new URL(`./${file}`, import.meta.url))], {
+    encoding: 'utf8',
+    windowsHide: true,
+  });
+  if (result.stdout) process.stdout.write(result.stdout);
+  if (result.stderr) process.stderr.write(result.stderr);
+  const count = Number(result.stdout?.match(/(\d+) Rock \d+ tests passed/)?.[1] || 0);
+  if (result.status === 0 && count > 0) passed += count;
+  else {
+    failed++;
+    console.log(`  ✗ ${label} focused suite failed (exit ${result.status ?? 'unknown'})`);
+  }
 }
 
 console.log('\n  ' + '─'.repeat(50));

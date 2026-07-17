@@ -7,7 +7,7 @@ Maps Urðr's 4-root tree memory onto OpenClaw's bootstrap file system.
 ```
 OpenClaw Workspace (~/.openclaw/workspace/)
 │
-├── MEMORY.md              ← Urðr Root-1 (topics) + Root-3 (decisions)
+├── MEMORY.md              ← Symlink to Urðr Root-0 (routing index)
 ├── IDENTITY.md            ← Urðr agent-personality.md
 ├── AGENTS.md              ← Urðr protocol references
 │
@@ -62,8 +62,8 @@ git clone https://github.com/natureco-official/urdr.git ~/urdr
 cd ~/.openclaw/workspace
 ~/urdr/scripts/init.sh --path ./memory --lang en --agent-name "Your Agent Name"
 
-# Symlink roots into place (optional)
-ln -sf memory/root-1-topics.md MEMORY.md
+# Expose the routing index through OpenClaw's curated-memory bootstrap file
+ln -sf memory/root-0-index.md MEMORY.md
 ln -sf memory/agent-personality.md IDENTITY.md
 ```
 
@@ -71,10 +71,10 @@ ln -sf memory/agent-personality.md IDENTITY.md
 
 | Urðr Root | OpenClaw File | Purpose |
 |-----------|---------------|---------|
-| Root-0 (index) | `memory/root-0-index.md` | Routing map — injected into bootstrap |
-| Root-1 (topics) | `MEMORY.md` via symlink or `memory/root-1-topics.md` | Durable facts, projects, people |
+| Root-0 (index) | `MEMORY.md` via symlink to `memory/root-0-index.md` | Routing map — injected into bootstrap |
+| Root-1 (topics) | `memory/root-1-topics.md` | Durable facts, projects, people |
 | Root-2 (technical) | `memory/root-2-technical.md` | Systems, APIs, configs |
-| Root-3 (decisions) | Included in `MEMORY.md` or `memory/root-3-decisions.md` | ADRs, constraints, lessons |
+| Root-3 (decisions) | `memory/root-3-decisions.md` | ADRs, constraints, lessons |
 | Personality | `IDENTITY.md` via `memory/agent-personality.md` | Agent name, vibe, character |
 | Protocols | `memory/protocols/*.md` | Architecture rules (loaded on demand) |
 
@@ -82,8 +82,8 @@ ln -sf memory/agent-personality.md IDENTITY.md
 
 ### On Session Start (OpenClaw loads automatically)
 
-1. OpenClaw reads `MEMORY.md` / `root-0-index.md` from bootstrap
-2. Agent reads `## Pending` branch in Root-3
+1. OpenClaw reads `MEMORY.md`, the symlinked Root-0 routing index
+2. Agent loads Root-3 and reads its `## Pending` branch
 3. Agent loads `IDENTITY.md` / `agent-personality.md`
 
 ### On "Remember This"
@@ -91,7 +91,7 @@ ln -sf memory/agent-personality.md IDENTITY.md
 When you ask OpenClaw to remember something:
 
 ```
-Standard OpenClaw → writes to MEMORY.md or memory/YYYY-MM-DD.md
+Standard OpenClaw → writes working notes to memory/YYYY-MM-DD.md
 Urðr-enhanced       → agent routes to correct root file:
                     • Person/project → Root-1
                     • Technical      → Root-2
@@ -105,7 +105,7 @@ Add to `HEARTBEAT.md`:
 ```markdown
 ## Weekly Memory Audit
 
-Run: ./scripts/check-growth.sh ~/.openclaw/workspace/memory/
+Run: node /path/to/urdr/scripts/lint.mjs ~/.openclaw/workspace/memory/
 
 Check:
 - Any root with 9+ branches? → split
@@ -115,7 +115,7 @@ Check:
 
 ## Caveats
 
-1. OpenClaw's `MEMORY.md` is designed as a **single curated file**. Urðr's 4-root model distributes content — make sure `root-0-index.md` is in the bootstrap to help the agent navigate.
+1. OpenClaw's `MEMORY.md` is designed as a **single curated file**. In this mapping it is only the routing index; durable content stays in the domain roots under `memory/`.
 2. OpenClaw's daily notes (`memory/YYYY-MM-DD.md`) remain unchanged — they're the working layer. Urðr roots are the **curated/persistent layer**.
 3. If using `memory_search` with embeddings, add root files to the index:
 

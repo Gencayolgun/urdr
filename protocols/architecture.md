@@ -151,7 +151,7 @@ When a new question arrives:
 
 **Search tools:**
 - **Direct read** (`read <path>`) — when root+branch path is known
-- **Content search** (`grep` / `rg`) — when path is unknown
+- **Fallback search** (`node scripts/search.mjs "<keyword>" <memory-dir>`) — when the hierarchy comes up empty
 - **Semantic search** — fuzzy match by topic (if available)
 
 **Principle:** Locate with 1-2 tool calls before reading. Don't guess — verify.
@@ -178,7 +178,7 @@ When a new question arrives:
 
 | Signal | Action |
 |--------|--------|
-| A root reaches 10+ branches | **Create new root** or add virtual sub-grouping |
+| A root reaches 9+ branches | **Create new root** or add virtual sub-grouping |
 | A branch reaches 50+ leaves | **Split into sub-groups** (e.g., branch-A → branch-A.1, branch-A.2) |
 | Same info found in 3+ places | **Cross-ref rule broken** — fix urgently |
 
@@ -198,7 +198,7 @@ When a new question arrives:
 
 When something goes wrong:
 
-1. **Agent can't find information** → grep across all roots, check root-0 index
+1. **Agent can't find information** → run `scripts/search.mjs` across the memory tree, check root-0 index
 2. **Information contradicts itself** → identify the primary source, deprecate the duplicate
 3. **Branch is too large to navigate** → run growth audit, split
 4. **Wrong root selected** → move entry, leave `bkz:` reference at old location
@@ -239,7 +239,7 @@ See `hard-error-protocol.md` for detailed error recovery procedures.
 │   Never delete → keep in place or move to "historical"      │
 │                                                             │
 │ Growth:                                                      │
-│   Root 10+ branches → new root                              │
+│   Root 9+ branches → new root                               │
 │   Branch 50+ leaves → split (sub-groups)                    │
 │   Info in 3+ places → cross-ref broken, fix                 │
 └─────────────────────────────────────────────────────────────┘

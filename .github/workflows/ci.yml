@@ -24,11 +24,25 @@ jobs:
       - name: Self-test (all tools)
         run: node scripts/selftest.mjs
 
+      # selftest includes the Rock 2 migrate/init behavior suite and Rock 3 golden policy suite.
+      # Keep the entry-point checks explicit so packaging/path regressions are easy to diagnose.
+      - name: Migration CLI entry point
+        run: node scripts/migrate.mjs --help
+
+      - name: Init CLI entry point
+        run: bash scripts/init.sh --help
+        shell: bash
+
       # Benchmark doubles as a guard: exits non-zero on any write-fidelity loss.
       - name: Benchmark (fidelity + recall guard)
         run: node scripts/bench.mjs --leaves 200 --ambiguity 0.3
 
-      # Health lint must parse the shipped templates without a crash.
-      - name: Lint smoke on templates
-        run: node scripts/lint.mjs templates --json > /dev/null
+      # Parse and evaluate lint's contract, rather than merely checking for a crash.
+      - name: Evaluate lint output on templates
         shell: bash
+        run: |
+          node scripts/lint.mjs templates --json > lint-result.json
+          node -e "const r=require('./lint-result.json'); if(r.errors) { console.error(r); process.exit(1) }; console.log('lint evaluated:',r.errors,'errors,',r.warnings,'warnings')"
+
+      - name: Check documentation references
+        run: node scripts/lib/doc-check.mjs .

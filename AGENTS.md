@@ -43,7 +43,7 @@ When you have an Urðr memory tree, you are expected to:
 1. Review what changed this session
 2. Update relevant roots/branches
 3. Add dated entries for key decisions
-4. Flag any growth warnings (branch > 50 leaves, root > 9 branches)
+4. Flag any growth warnings (branch reaches 50 leaves, root reaches 9 branches)
 ```
 
 ---
@@ -194,7 +194,7 @@ This file should be loaded at session start alongside memory roots. It gives the
    branches/roots, index bloat, broken `bkz:` refs, and near-duplicate leaves. Exits
    non-zero on errors, so it doubles as a CI/pre-commit guard.
 2. **Review flagged branches** — are they overgrown? misclassified?
-3. **Run `migrate.sh`** — restructure branches as needed
+3. **Run `node scripts/migrate.mjs --help`** — select a transactional restructure operation
 4. **Update index** (root-0) if roots were added/removed
 
 ### What If the Agent Can't Find Something?
@@ -231,11 +231,11 @@ This file should be loaded at session start alongside memory roots. It gives the
 │                                                             │
 │ FIND INFO (4 steps, <300 tokens):                           │
 │   1. Identify subject → 2. Select root → 3. Pick branch     │
-│   4. Read leaf (or grep if path unknown)                    │
+│   4. Read leaf (or run search.mjs if path unknown)          │
 │                                                             │
 │ GROWTH WARNINGS:                                            │
-│   Root > 9 branches → split                                 │
-│   Branch > 50 leaves → subdivide                            │
+│   Root reaches 9 branches → split                           │
+│   Branch reaches 50 leaves → subdivide                      │
 │   Info in 3+ places → cross-ref broken                      │
 │                                                             │
 │ NEVER SAVE:                                                 │

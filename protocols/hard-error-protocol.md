@@ -43,7 +43,7 @@
    ~/.Trash/ (macOS)
    ~/.local/share/Trash/ (Linux)
    backup directory if configured
-5. After recovery, run check-growth.sh to verify integrity
+5. After recovery, run `node scripts/lint.mjs <memory-dir>` to verify integrity
 6. Add preventive measure: configure automated git commits
 ```
 
@@ -80,7 +80,7 @@
       "**DEPRECATED on DD.MM.YYYY — see <primary-location>**"
    c. If the contradiction reveals a new lesson:
       Add entry to Root-3 / Lessons Learned
-4. Verify: grep for the old value to ensure no stale references remain
+4. Verify with `node scripts/search.mjs "<old-value>" <memory-dir>` that no stale references remain
 ```
 
 ### Prevention
