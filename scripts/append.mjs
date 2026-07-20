@@ -16,8 +16,9 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import crypto from 'node:crypto';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { findBranch, hasHeadingNodes, parseMarkdown } from './lib/markdown-model.mjs';
 import { acquireLeaseLock, assertLeaseOwned, releaseLeaseLock } from './lib/lock.mjs';
@@ -53,27 +54,191 @@ export function resolveConfinedTarget(memoryDir, rootFile) {
   return { memory, parent, target };
 }
 
-function windowsDurableRename(from, to) {
-  const source = `
+const WINDOWS_MOVE_HELPER_SOURCE = `
 using System;
 using System.ComponentModel;
+using System.IO;
 using System.Runtime.InteropServices;
+using System.Text;
+using System.Threading;
 public static class UrdrMove {
-  [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+  [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true, EntryPoint="MoveFileExW")]
   [return: MarshalAs(UnmanagedType.Bool)]
   static extern bool MoveFileEx(string from, string to, uint flags);
-  public static void Run(string from, string to) {
-    if (!MoveFileEx(from, to, 0x1 | 0x8)) throw new Win32Exception(Marshal.GetLastWin32Error());
+  [DllImport("kernel32.dll", SetLastError=true)]
+  static extern IntPtr OpenProcess(uint access, bool inheritHandle, int processId);
+  [DllImport("kernel32.dll")]
+  static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
+  [DllImport("kernel32.dll")]
+  [return: MarshalAs(UnmanagedType.Bool)]
+  static extern bool CloseHandle(IntPtr handle);
+
+  static string Move(string from, string to) {
+    if (MoveFileEx(from, to, 0x1u | 0x8u)) return null;
+    int error = Marshal.GetLastWin32Error();
+    return new Win32Exception(error).Message + " (" + error + ")";
+  }
+
+  static bool ProcessExists(int processId) {
+    IntPtr handle = OpenProcess(0x00100000u, false, processId);
+    if (handle == IntPtr.Zero) return false;
+    try { return WaitForSingleObject(handle, 0) == 0x00000102u; }
+    finally { CloseHandle(handle); }
+  }
+
+  static void RunServer(string directory, int parentPid) {
+    Directory.CreateDirectory(directory);
+    try {
+      while (ProcessExists(parentPid) && !File.Exists(Path.Combine(directory, "stop"))) {
+        foreach (string request in Directory.GetFiles(directory, "*.request")) {
+          string response = Path.ChangeExtension(request, ".response");
+          string result;
+          try {
+            byte[] payload = File.ReadAllBytes(request);
+            int fromBytes = BitConverter.ToInt32(payload, 0);
+            string from = Encoding.Unicode.GetString(payload, 4, fromBytes);
+            string to = Encoding.Unicode.GetString(payload, 4 + fromBytes, payload.Length - 4 - fromBytes);
+            string error = Move(from, to);
+            result = error == null ? "ok" : "error\\n" + error;
+          } catch (Exception error) {
+            result = "error\\n" + error.Message;
+          }
+          string temporary = response + ".tmp";
+          File.WriteAllText(temporary, result, new UTF8Encoding(false));
+          File.Move(temporary, response);
+          File.Delete(request);
+        }
+        Thread.Sleep(1);
+      }
+    } finally {
+      for (int attempt = 0; attempt < 20; attempt++) {
+        try {
+          if (Directory.Exists(directory)) Directory.Delete(directory, true);
+          break;
+        } catch { Thread.Sleep(5); }
+      }
+    }
+  }
+
+  public static int Main(string[] args) {
+    if (args.Length == 3 && args[0] == "--server") {
+      RunServer(args[1], Int32.Parse(args[2]));
+      return 0;
+    }
+    if (args.Length != 2) {
+      Console.Error.WriteLine("expected source and destination paths");
+      return 2;
+    }
+    string moveError = Move(args[0], args[1]);
+    if (moveError == null) return 0;
+    Console.Error.WriteLine(moveError);
+    return 1;
   }
 }`;
-  const command = `Add-Type -TypeDefinition @'\n${source}\n'@; [UrdrMove]::Run($env:URDR_MOVE_FROM, $env:URDR_MOVE_TO)`;
+
+let windowsMoveHelper;
+let windowsMoveServer;
+
+function sleepSync(ms) {
+  try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); }
+  catch { const until = Date.now() + ms; while (Date.now() < until) {} }
+}
+
+function processExists(pid) {
+  try { process.kill(pid, 0); return true; }
+  catch (error) { return error.code === 'EPERM'; }
+}
+
+function windowsMoveHelperPath() {
+  if (windowsMoveHelper && fs.existsSync(windowsMoveHelper)) return windowsMoveHelper;
+
+  const sourceHash = crypto.createHash('sha256').update(WINDOWS_MOVE_HELPER_SOURCE).digest('hex');
+  const cacheDir = path.join(os.tmpdir(), 'urdr-durable-rename');
+  const helper = path.join(cacheDir, `movefileex-${sourceHash}.exe`);
+  fs.mkdirSync(cacheDir, { recursive: true });
+  if (fs.existsSync(helper)) {
+    windowsMoveHelper = helper;
+    return helper;
+  }
+
+  const temporary = path.join(cacheDir, `.movefileex-${sourceHash}-${process.pid}-${crypto.randomUUID()}.exe`);
+  const command = `Add-Type -TypeDefinition @'\n${WINDOWS_MOVE_HELPER_SOURCE}\n'@ -Language CSharp -OutputAssembly $env:URDR_MOVE_HELPER -OutputType ConsoleApplication`;
   const encoded = Buffer.from(command, 'utf16le').toString('base64');
   const result = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', encoded], {
     encoding: 'utf8',
     windowsHide: true,
-    env: { ...process.env, URDR_MOVE_FROM: from, URDR_MOVE_TO: to },
+    env: { ...process.env, URDR_MOVE_HELPER: temporary },
   });
-  if (result.status !== 0) throw new Error(`durable rename failed: ${(result.stderr || result.stdout || '').trim()}`);
+  if (result.error || result.status !== 0 || !fs.existsSync(temporary)) {
+    try { fs.rmSync(temporary, { force: true }); } catch {}
+    const detail = result.error?.message || result.stderr || result.stdout || `PowerShell exited with status ${result.status}`;
+    throw new Error(`durable rename helper compilation failed: ${detail.trim()}`);
+  }
+
+  try { fs.renameSync(temporary, helper); }
+  catch (error) {
+    // Concurrent first writers compile identical, content-addressed helpers. The winner
+    // publishes atomically; losers discard their private completed executable.
+    try { fs.rmSync(temporary, { force: true }); } catch {}
+    if (!fs.existsSync(helper)) throw error;
+  }
+  windowsMoveHelper = helper;
+  return helper;
+}
+
+function windowsMoveServerHandle() {
+  if (windowsMoveServer && processExists(windowsMoveServer.child.pid)) return windowsMoveServer;
+
+  const directory = path.join(os.tmpdir(), `urdr-durable-rename-${process.pid}-${crypto.randomUUID()}`);
+  fs.mkdirSync(directory);
+  const child = spawn(windowsMoveHelperPath(), ['--server', directory, String(process.pid)], {
+    stdio: 'ignore',
+    windowsHide: true,
+  });
+  child.on('error', () => {});
+  child.unref();
+
+  const cleanup = () => {
+    try { fs.writeFileSync(path.join(directory, 'stop'), ''); } catch {}
+    const deadline = Date.now() + 1000;
+    while (processExists(child.pid) && Date.now() < deadline) sleepSync(5);
+    if (processExists(child.pid)) try { child.kill(); } catch {}
+    try { fs.rmSync(directory, { recursive: true, force: true }); } catch {}
+  };
+  process.once('exit', cleanup);
+  windowsMoveServer = { child, directory };
+  return windowsMoveServer;
+}
+
+function windowsDurableRename(from, to) {
+  // atomicReplaceFile blocks the event loop by contract, so publish a complete request
+  // and synchronously poll for the independently running helper's atomic response.
+  const server = windowsMoveServerHandle();
+  const token = crypto.randomUUID();
+  const request = path.join(server.directory, `${token}.request`);
+  const response = path.join(server.directory, `${token}.response`);
+  const temporary = `${request}.tmp`;
+  const fromBytes = Buffer.from(from, 'utf16le');
+  const toBytes = Buffer.from(to, 'utf16le');
+  const payload = Buffer.allocUnsafe(4 + fromBytes.length + toBytes.length);
+  payload.writeUInt32LE(fromBytes.length, 0);
+  fromBytes.copy(payload, 4);
+  toBytes.copy(payload, 4 + fromBytes.length);
+  fs.writeFileSync(temporary, payload, { flag: 'wx' });
+  fs.renameSync(temporary, request);
+
+  const deadline = Date.now() + 30000;
+  while (!fs.existsSync(response)) {
+    if (!processExists(server.child.pid)) throw new Error('durable rename failed: helper process stopped');
+    if (Date.now() >= deadline) throw new Error('durable rename failed: helper response timeout');
+    sleepSync(1);
+  }
+  const result = fs.readFileSync(response, 'utf8');
+  try { fs.rmSync(response, { force: true }); } catch {}
+  if (result !== 'ok') {
+    const detail = result.startsWith('error\n') ? result.slice(6) : result;
+    throw new Error(`durable rename failed: ${detail.trim()}`);
+  }
 }
 
 function durableRename(from, to) {
