@@ -100,8 +100,12 @@ console.log('\n  🌳 Rock 5 self-test\n  ' + '─'.repeat(50));
 
 // Production writer and stable-ID benchmark methodology are exercised through the CLI.
 {
+  // Windows durability uses a fresh PowerShell process for each write-through atomic
+  // replacement. Import + production appends can therefore exceed 60s on slower hosts
+  // even though the benchmark's search work completes in milliseconds.
+  const benchTimeoutMs = process.platform === 'win32' ? 120000 : 60000;
   const bench = spawnSync(process.execPath, [fileURLToPath(new URL('./bench.mjs', import.meta.url)), '--leaves', '3', '--ambiguity', '0.34', '--collision', '0.34'], {
-    encoding: 'utf8', windowsHide: true, timeout: 60000,
+    encoding: 'utf8', windowsHide: true, timeout: benchTimeoutMs,
   });
   ok(bench.status === 0 && /Production-writer fidelity\s+: 100\.0%/.test(bench.stdout), 'benchmark: write fidelity uses the production append/event-log path');
   ok(/Stable-ID import\/oracle fidelity\s+: 100\.0%/.test(bench.stdout), 'benchmark: ground truth is established through stable IDs');
