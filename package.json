@@ -4,7 +4,11 @@
   "description": "Model Context Protocol server for Urdr memory tooling",
   "license": "MIT",
   "type": "module",
-  "private": true,
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/natureco-official/urdr.git"
+  },
+  "homepage": "https://github.com/natureco-official/urdr#readme",
   "bin": {
     "urdr-mcp": "scripts/mcp-server.mjs"
   },
