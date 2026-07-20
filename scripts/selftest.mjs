@@ -275,6 +275,22 @@ console.log('\n  🌳 Urðr self-test\n  ' + '─'.repeat(50));
   fs.rmSync(dir, { recursive: true, force: true });
 }
 
+{
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'urdr-selftest-append-edge-'));
+  fs.writeFileSync(path.join(dir, 'root-1-topics.md'), '# Root-1\n\n## Projects\n\n_No entries yet._\n');
+  fs.writeFileSync(path.join(dir, 'root-2-technical.md'), '# Root-2\n\n## APIs\n\n- canonical API leaf\n');
+  const appended = appendLeaf(dir, 'root-1-topics.md', 'Projects', '- project bridge (bkz: Root-2 / APIs)');
+  const state = readCommittedState(dir);
+  const edge = [...state.edges.values()].find((item) => item.sourceId === appended.id);
+  const transactionTypes = readEventLog(dir).records
+    .filter((record) => record.transactionId === appended.transactionId && record.kind === 'operation')
+    .map((record) => record.operation.type);
+  ok(edge?.status === 'resolved' && edge.targetId && state.leaves.has(edge.targetId)
+    && transactionTypes.includes('leaf.upsert') && transactionTypes.includes('edge.upsert'),
+  'append bkz edges: append atomically commits its resolved stable-ID edge without a later import');
+  fs.rmSync(dir, { recursive: true, force: true });
+}
+
 // ── transaction atomicity ────────────────────────────────────
 {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'urdr-selftest-tx-'));
@@ -498,6 +514,24 @@ console.log('\n  🌳 Urðr self-test\n  ' + '─'.repeat(50));
     'event log: unanchored incomplete tail is recognized as recoverable');
   beginTransaction(dir).addOperation({ type: 'test.after-recovery' }).commit();
   ok(readEventLog(dir).integrity, 'event log: next append recovers an incomplete unanchored tail');
+
+  const beforeCorruption = readEventLog(dir);
+  const beforeCorruptionSource = fs.readFileSync(logFile, 'utf8');
+  fs.writeFileSync(logFile, `${beforeCorruptionSource}{"malformed":}\n`);
+  const corruptedTail = readEventLog(dir);
+  let corruptedTailBlocked = false;
+  try { beginTransaction(dir).addOperation({ type: 'test.must-not-pass-corruption' }).commit(); }
+  catch (error) { corruptedTailBlocked = /event log integrity failure: corrupted-tail/.test(error.message); }
+  ok(!corruptedTail.integrity && corruptedTail.errors.some((error) => error.code === 'corrupted-tail')
+    && corruptedTailBlocked && fs.readFileSync(logFile, 'utf8') === `${beforeCorruptionSource}{"malformed":}\n`
+    && readEventLog(dir).records.length === beforeCorruption.records.length,
+  'event log: newline-terminated corrupted tail blocks append without burying readable records');
+  fs.writeFileSync(logFile, beforeCorruptionSource);
+  beginTransaction(dir).addOperation({ type: 'test.after-explicit-tail-repair' }).commit();
+  const repairedTail = readEventLog(dir);
+  ok(repairedTail.integrity && repairedTail.records.length > beforeCorruption.records.length
+    && repairedTail.records.some((record) => record.operation?.type === 'test.after-explicit-tail-repair'),
+  'event log: explicit corrupted-tail repair restores append and keeps every new record reachable');
   fs.rmSync(dir, { recursive: true, force: true });
 }
 

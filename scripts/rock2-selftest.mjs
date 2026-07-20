@@ -8,6 +8,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { readCommittedState, readEventLog } from './lib/event-log.mjs';
 import { ROOT_FILE_RE, parseMarkdown } from './lib/markdown-model.mjs';
 import { importMarkdown, reconcileMarkdown } from './lib/transaction.mjs';
+import { lintTree } from './lint.mjs';
 import { createRoot, main, moveEntries, splitBranch } from './migrate.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -119,6 +120,36 @@ test('move inserts in the named target branch, removes its placeholder, and pres
   assert.equal(moved.id, alpha.id);
   assert.equal(moved.branch, 'Systems');
   assert(operationTypes(dir).includes('migration.move'));
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('move retargets incoming stable-ID edges and human bkz paths in the same migration', () => {
+  const dir = temp('move-incoming-edge');
+  const files = writeTree(dir);
+  fs.writeFileSync(path.join(dir, files[3]), '# Root-3\n\n## Rules\n\n- project rule (bkz: Root-1 / Projects)\n');
+  importMarkdown(dir);
+  const before = readCommittedState(dir);
+  const target = [...before.leaves.values()].find((leaf) => /Alpha project/.test(leaf.text));
+  const incoming = [...before.edges.values()].find((edge) => edge.targetId === target.id);
+  assert.equal(incoming.status, 'resolved');
+
+  moveEntries(path.join(dir, files[1]), path.join(dir, files[2]), 'Systems', [target.id]);
+
+  const after = readCommittedState(dir);
+  const repaired = [...after.edges.values()].find((edge) => edge.sourceId === incoming.sourceId && edge.targetId === target.id);
+  assert.equal(after.leaves.get(target.id).file, files[2]);
+  assert.equal(after.leaves.get(target.id).branch, 'Systems');
+  assert.equal(repaired.status, 'resolved');
+  assert.match(repaired.human, /Root-2 \/ Systems/);
+  assert.match(fs.readFileSync(path.join(dir, files[3]), 'utf8'), /bkz: Root-2 \/ Systems/);
+  assert.equal(lintTree(dir).findings.some((finding) => finding.code === 'broken-ref'), false);
+  const migrationTransaction = readEventLog(dir).records.findLast((record) => record.operation?.type === 'migration.move')?.transactionId;
+  const migrationTypes = readEventLog(dir).records
+    .filter((record) => record.transactionId === migrationTransaction && record.kind === 'operation')
+    .map((record) => record.operation.type);
+  assert.ok(migrationTypes.includes('leaf.upsert'));
+  assert.ok(migrationTypes.includes('edge.delete'));
+  assert.ok(migrationTypes.includes('edge.upsert'));
   fs.rmSync(dir, { recursive: true, force: true });
 });
 

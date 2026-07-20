@@ -23,7 +23,7 @@ import { fileURLToPath } from 'node:url';
 import { findBranch, hasHeadingNodes, parseMarkdown } from './lib/markdown-model.mjs';
 import { acquireLeaseLock, assertLeaseOwned, releaseLeaseLock } from './lib/lock.mjs';
 import { eventLogPaths, hashContent, readCommittedState } from './lib/event-log.mjs';
-import { assignStableIds, beginTransaction, importMarkdown } from './lib/transaction.mjs';
+import { assignStableIds, beginTransaction, importMarkdown, populateTransactionEdgesFromViews } from './lib/transaction.mjs';
 
 export const FILE_METADATA_GUARANTEES = Object.freeze({
   linux: 'POSIX permission bits are copied; ownership, ACLs, xattrs, and security labels are not preserved.',
@@ -328,7 +328,7 @@ export function appendLeaf(memoryDir, rootFile, branch, leafText, opts = {}) {
 
     const content = fs.readFileSync(target, 'utf8');
     const existingIds = new Set(parseMarkdown(content).leaves.map((leaf) => leaf.id).filter(Boolean));
-    const next = assignStableIds(insertLeaf(content, branch, leafText));
+    let next = assignStableIds(insertLeaf(content, branch, leafText));
     const model = parseMarkdown(next);
     const appended = model.leaves
       .map((leaf, index) => ({ leaf, index }))
@@ -340,18 +340,24 @@ export function appendLeaf(memoryDir, rootFile, branch, leafText, opts = {}) {
     if (existing) {
       throw new Error(`stable leaf id already exists in committed tree: ${leaf.id} (${existing.file})`);
     }
-    const result = beginTransaction(memory, { lock })
-      .upsertLeaf({
-        id: leaf.id,
-        file: rootFile,
-        branch: leaf.branch,
-        kind: leaf.kind,
-        index,
-        text: leaf.text,
-        contentHash: hashContent(leaf.text),
-      })
-      .publishRoot(rootFile, next)
-      .commit(opts);
+    const proposedLeaf = {
+      id: leaf.id,
+      file: rootFile,
+      branch: leaf.branch,
+      kind: leaf.kind,
+      index,
+      text: leaf.text,
+      contentHash: hashContent(leaf.text),
+    };
+    const transaction = beginTransaction(memory, { lock }).upsertLeaf(proposedLeaf);
+    const proposed = new Map([[rootFile, next]]);
+    populateTransactionEdgesFromViews(transaction, committedState, proposed, {
+      baseLeaves: committedState.leaves,
+      sourceIds: [leaf.id],
+      embedResolved: true,
+    });
+    next = proposed.get(rootFile);
+    const result = transaction.publishRoot(rootFile, next).commit(opts);
     return {
       file: rootFile,
       branch,

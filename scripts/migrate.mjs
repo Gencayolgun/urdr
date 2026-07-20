@@ -6,7 +6,13 @@ import { fileURLToPath } from 'node:url';
 import { eventLogPaths, hashContent, readCommittedState as readState } from './lib/event-log.mjs';
 import { acquireLeaseLock, releaseLeaseLock } from './lib/lock.mjs';
 import { findBranch, listRootFiles, parseMarkdown, ROOT_FILE_RE } from './lib/markdown-model.mjs';
-import { beginTransaction, importMarkdown, readPublishedGeneration } from './lib/transaction.mjs';
+import {
+  beginTransaction,
+  importMarkdown,
+  populateTransactionFromViews,
+  readPublishedGeneration,
+  retargetMovedReferences,
+} from './lib/transaction.mjs';
 
 function fail(message) { throw new Error(message); }
 function cleanBranch(value) { return String(value).trim().replace(/^##\s+/, '').trim(); }
@@ -101,11 +107,11 @@ function addStateDiff(tx, beforeState, contents) {
       after.set(leaf.id, { id: leaf.id, file, branch: leaf.branch, kind: leaf.kind, index, text: leaf.text, contentHash: hashContent(leaf.text) });
     }
   }
-  for (const id of beforeState.leaves.keys()) if (!after.has(id)) tx.deleteLeaf(id);
-  for (const leaf of after.values()) {
-    const previous = beforeState.leaves.get(leaf.id);
-    if (!previous || ['file', 'branch', 'kind', 'index', 'text', 'contentHash'].some((key) => previous[key] !== leaf[key])) tx.upsertLeaf({ ...(previous || {}), ...leaf });
-  }
+  retargetMovedReferences(contents, beforeState, after);
+  const publishFiles = [...contents]
+    .filter(([file, content]) => beforeState.checkpoints.get(file)?.contentHash !== hashContent(content))
+    .map(([file]) => file);
+  populateTransactionFromViews(tx, beforeState, contents, { publishFiles });
 }
 
 function prepare(memoryDir, lock) {
@@ -146,7 +152,7 @@ export function splitBranch(fileArg, branchArg, subBranches, opts = {}) {
     const tx = beginTransaction(root.memoryDir, { lock }).addOperation({ type: 'migration.split', file: root.file, branch: parent, subBranches: headings });
     // The migration lock keeps this complete snapshot current through commit.
     addStateDiff(tx, readState(root.memoryDir), contents);
-    tx.publishRoot(root.file, updated).commit();
+    tx.commit();
     return { file: root.file, branch: parent, subBranches: headings };
   });
 }
@@ -190,8 +196,6 @@ export function moveEntries(sourceArg, targetArg, targetBranchArg, selectors, op
   contents.set(target.file, nextTarget);
   const tx = beginTransaction(source.memoryDir, { lock }).addOperation({ type: 'migration.move', source: source.file, target: target.file, targetBranch: cleanBranch(targetBranchArg), leafIds: [...ids] });
   addStateDiff(tx, readState(source.memoryDir), contents);
-  tx.publishRoot(source.file, nextSource);
-  if (target.file !== source.file) tx.publishRoot(target.file, nextTarget);
   tx.commit();
   return { moved: ids.size, source: source.file, target: target.file, targetBranch: cleanBranch(targetBranchArg) };
   });
@@ -251,8 +255,6 @@ export function createRoot(nameArg, sourceArg, branchArgs, opts = {}) {
   }
   const tx = beginTransaction(source.memoryDir, { lock }).addOperation({ type: 'migration.new-root', source: source.file, target: newFile, branches: branches.map((item) => item.name) });
   addStateDiff(tx, readState(source.memoryDir), contents);
-  tx.publishRoot(source.file, nextSource).publishRoot(newFile, newContent);
-  if (indexFile) tx.publishRoot(indexFile, contents.get(indexFile));
   tx.commit();
   return { file: newFile, number, branches: branches.map((item) => item.name) };
   });

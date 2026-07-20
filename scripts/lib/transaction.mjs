@@ -94,16 +94,22 @@ function edgeId(sourceId, targetId, status, human) {
   return `e_${hashContent(canonicalJson({ human, sourceId, status, targetId })).slice(0, 24)}`;
 }
 
-function deriveEdges(contents, embedResolved) {
+function deriveEdges(contents, embedResolved, opts = {}) {
   const snapshots = new Map();
   const branches = new Map();
+  const allLeaves = new Map(opts.baseLeaves || []);
+  const sourceIds = opts.sourceIds ? new Set(opts.sourceIds) : null;
   for (const [file, content] of contents) {
     const snapshot = leafSnapshot(file, content);
     snapshots.set(file, snapshot);
-    const number = rootNumber(file);
-    for (const branch of snapshot.model.branches) {
-      branches.set(`${number}/${normalize(branch.name)}`, branch.leaves.map((leaf) => leaf.id).filter(Boolean));
-    }
+    for (const [id, leaf] of allLeaves) if (leaf.file === file) allLeaves.delete(id);
+    for (const [id, leaf] of snapshot.leaves) allLeaves.set(id, leaf);
+  }
+  for (const leaf of allLeaves.values()) {
+    const key = `${rootNumber(leaf.file)}/${normalize(leaf.branch)}`;
+    const ids = branches.get(key) || [];
+    ids.push(leaf.id);
+    branches.set(key, ids);
   }
 
   const edges = new Map();
@@ -111,6 +117,7 @@ function deriveEdges(contents, embedResolved) {
   for (const [file, snapshot] of snapshots) {
     const additions = new Map();
     for (const leaf of snapshot.model.leaves) {
+      if (sourceIds && !sourceIds.has(leaf.id)) continue;
       const matches = [...leaf.text.matchAll(BKZ_RE)];
       const explicit = leaf.edgeTargets || [];
       const used = new Set();
@@ -123,7 +130,7 @@ function deriveEdges(contents, embedResolved) {
         const explicitTarget = metadataIndex >= 0 ? explicit[metadataIndex].targetId : null;
         if (metadataIndex >= 0) used.add(metadataIndex);
         const targetId = explicitTarget || (candidates.length === 1 ? candidates[0] : null);
-        const targetExists = targetId && [...snapshots.values()].some((item) => item.leaves.has(targetId));
+        const targetExists = targetId && allLeaves.has(targetId);
         const status = !targetId ? 'legacy-unresolved'
           : !targetExists ? 'unresolved'
             : candidates.includes(targetId) ? 'resolved' : 'resolved-path-mismatch';
@@ -137,7 +144,7 @@ function deriveEdges(contents, embedResolved) {
       }
       for (const [index, item] of explicit.entries()) {
         if (used.has(index)) continue;
-        const targetExists = [...snapshots.values()].some((snapshot) => snapshot.leaves.has(item.targetId));
+        const targetExists = allLeaves.has(item.targetId);
         const status = targetExists ? 'resolved-path-mismatch' : 'unresolved';
         const human = matches[item.index]?.[0] || 'bkz:';
         const edge = { id: edgeId(leaf.id, item.targetId, status, human), sourceId: leaf.id, targetId: item.targetId, status, human };
@@ -151,6 +158,90 @@ function deriveEdges(contents, embedResolved) {
     for (const [file, additions] of additionsByFile) contents.set(file, insertMetadata(contents.get(file), additions));
   }
   return edges;
+}
+
+function sourceIdsIn(contents) {
+  const ids = new Set();
+  for (const [file, content] of contents) {
+    for (const id of leafSnapshot(file, content).leaves.keys()) ids.add(id);
+  }
+  return ids;
+}
+
+/** Derive and diff edges for complete views or for a scoped set of source leaves. */
+export function populateTransactionEdgesFromViews(transaction, state, contents, opts = {}) {
+  const deriveOpts = { baseLeaves: opts.baseLeaves, sourceIds: opts.sourceIds };
+  if (opts.embedResolved) deriveEdges(contents, true, deriveOpts);
+  const edges = deriveEdges(contents, false, deriveOpts);
+  const managedSourceIds = opts.sourceIds ? new Set(opts.sourceIds) : sourceIdsIn(contents);
+  // edgeId() hashes every canonical edge field, so an existing id is already identical content.
+  for (const edge of edges.values()) if (!state.edges.has(edge.id)) transaction.upsertEdge(edge);
+  for (const [id, edge] of state.edges) {
+    if (managedSourceIds.has(edge.sourceId) && !edges.has(id)) transaction.deleteEdge(id);
+  }
+  return edges;
+}
+
+/** Rewrite incoming human bkz paths after their stable-ID targets move. */
+export function retargetMovedReferences(contents, beforeState, afterLeaves) {
+  const moved = new Map();
+  for (const [id, after] of afterLeaves) {
+    const before = beforeState.leaves.get(id);
+    if (before && (before.file !== after.file || before.branch !== after.branch)) moved.set(id, after);
+  }
+  if (moved.size === 0) return new Set();
+
+  const edgesBySource = new Map();
+  for (const edge of beforeState.edges.values()) {
+    if (!moved.has(edge.targetId)) continue;
+    const edges = edgesBySource.get(edge.sourceId) || [];
+    edges.push(edge);
+    edgesBySource.set(edge.sourceId, edges);
+  }
+
+  const changedFiles = new Set();
+  for (const [file, content] of contents) {
+    const model = parseMarkdown(content);
+    const lines = [...model.lines];
+    let changed = false;
+    for (const leaf of [...model.leaves].sort((a, b) => b.startLine - a.startLine)) {
+      const sourceEdges = edgesBySource.get(leaf.id);
+      if (!sourceEdges?.length) continue;
+      const matches = [...leaf.raw.matchAll(BKZ_RE)];
+      const explicit = leaf.edgeTargets || [];
+      const usedMetadata = new Set();
+      const replacements = [];
+      for (const [matchIndex, match] of matches.entries()) {
+        let metadataIndex = explicit.findIndex((item, index) => !usedMetadata.has(index) && item.index === matchIndex);
+        if (metadataIndex < 0) metadataIndex = explicit.findIndex((item, index) => !usedMetadata.has(index) && item.index === null);
+        let targetId = metadataIndex >= 0 ? explicit[metadataIndex].targetId : null;
+        if (metadataIndex >= 0) usedMetadata.add(metadataIndex);
+        if (!targetId) {
+          const candidates = sourceEdges.filter((edge) => edge.human === match[0]);
+          if (candidates.length === 1) targetId = candidates[0].targetId;
+        }
+        const target = moved.get(targetId);
+        if (!target) continue;
+        const number = rootNumber(target.file);
+        if (!number) throw new Error(`cannot derive root number for moved leaf target: ${target.file}`);
+        const rootToken = match[1].replace(/\d+/, number);
+        const prefix = match[0].slice(0, match[0].indexOf(match[1]));
+        replacements.push({ start: match.index, end: match.index + match[0].length, text: `${prefix}${rootToken} / ${target.branch}` });
+      }
+      if (replacements.length === 0) continue;
+      let raw = leaf.raw;
+      for (const replacement of replacements.sort((a, b) => b.start - a.start)) {
+        raw = raw.slice(0, replacement.start) + replacement.text + raw.slice(replacement.end);
+      }
+      lines.splice(leaf.startLine - 1, leaf.endLine - leaf.startLine + 1, ...raw.split('\n'));
+      changed = true;
+    }
+    if (changed) {
+      contents.set(file, lines.join(model.newline));
+      changedFiles.add(file);
+    }
+  }
+  return changedFiles;
 }
 
 function checkpointOperation(file, content) {
@@ -462,10 +553,7 @@ export function populateTransactionFromViews(transaction, state, contents, opts 
     else transaction.deleteLeaf(id);
   }
 
-  const edges = deriveEdges(contents, false);
-  // edgeId() hashes every canonical edge field, so an existing id is already identical content.
-  for (const edge of edges.values()) if (!state.edges.has(edge.id)) transaction.upsertEdge(edge);
-  for (const id of state.edges.keys()) if (!edges.has(id)) transaction.deleteEdge(id);
+  const edges = populateTransactionEdgesFromViews(transaction, state, contents);
   const publishFiles = opts.publishFiles ? new Set(opts.publishFiles) : new Set(contents.keys());
   for (const [file, content] of contents) if (publishFiles.has(file)) transaction.publishRoot(file, content);
   return { edges, leaves: currentLeaves, snapshots };

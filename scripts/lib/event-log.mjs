@@ -100,7 +100,7 @@ export function readEventLog(memoryDir) {
     catch (error) {
       const tail = index === lines.length - 1;
       const issue = { code: tail ? (hasFinalNewline ? 'corrupted-tail' : 'truncated-tail') : 'corrupted-record', line: index + 1, message: error.message };
-      (tail ? warnings : errors).push(issue);
+      (tail && !hasFinalNewline ? warnings : errors).push(issue);
       break;
     }
     const expectedSequence = records.length + 1;
