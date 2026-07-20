@@ -19,22 +19,19 @@
 
 ## Dal Özeti
 
-### Kök-1 (Konular)
-- `## Kişiler` — önemli kişiler, roller, tercihler
-- `## Projeler` — aktif projeler, durum, bağlantılar
-- `## Organizasyonlar` — şirketler, takımlar, topluluklar
-
-### Kök-2 (Teknik)
-- `## Sistemler` — kurulu araçlar, versiyonlar, konfigürasyon
-- `## API'ler` — API referansları, endpoint'ler, auth
-- `## Diller` — dil özel notlar
-- `## İş Akışları` — CI/CD, deploy, otomasyon
-
-### Kök-3 (Kararlar)
-- `## Karar Kaydı` — ADR'ler (tarih, alternatif, gerekçe)
-- `## Kısıtlar` — tartışılmaz kurallar, sınırlar
-- `## Öğrenilen Dersler` — kök sebep analizleri, kalıplar
-- `## Bekleyenler` — ilgilenilmesi gereken aktif işler
+| Kök | Dal | Amaç |
+|-----|-----|------|
+| Kök-1 (Konular) | `## Kişiler` | Önemli kişiler, roller, tercihler |
+| Kök-1 (Konular) | `## Projeler` | Aktif projeler, durum, bağlantılar |
+| Kök-1 (Konular) | `## Organizasyonlar` | Şirketler, takımlar, topluluklar |
+| Kök-2 (Teknik) | `## Sistemler` | Kurulu araçlar, versiyonlar, konfigürasyon |
+| Kök-2 (Teknik) | `## API'ler` | API referansları, endpoint'ler, auth |
+| Kök-2 (Teknik) | `## Diller` | Dil özel notlar |
+| Kök-2 (Teknik) | `## İş Akışları` | CI/CD, deploy, otomasyon |
+| Kök-3 (Kararlar) | `## Karar Kaydı` | ADR'ler (tarih, alternatif, gerekçe) |
+| Kök-3 (Kararlar) | `## Kısıtlar` | Tartışılmaz kurallar, sınırlar |
+| Kök-3 (Kararlar) | `## Öğrenilen Dersler` | Kök sebep analizleri, kalıplar |
+| Kök-3 (Kararlar) | `## Bekleyenler` | İlgilenilmesi gereken aktif işler |
 
 ---
 
@@ -54,10 +51,12 @@
 ## Çapraz Referans İndeksi
 
 _Diğer köklerden bu köke yapılan referanslar:_
-- (henüz yok)
+
+_Henüz kayıt yok._
 
 _Bu kökten diğer köklere yapılan `bkz:` referansları:_
-- (henüz yok)
+
+_Henüz kayıt yok._
 
 ---
 

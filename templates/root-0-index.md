@@ -19,22 +19,19 @@
 
 ## Branch Overview
 
-### Root-1 (Topics)
-- `## People` — key individuals, roles, preferences
-- `## Projects` — active projects, status, links
-- `## Organizations` — companies, teams, communities
-
-### Root-2 (Technical)
-- `## Systems` — installed tools, versions, configs
-- `## APIs` — API references, endpoints, auth
-- `## Languages` — language-specific notes
-- `## Workflows` — CI/CD, deployment, automation
-
-### Root-3 (Decisions)
-- `## Decision Log` — ADRs with date, alternative, rationale
-- `## Constraints` — non-negotiable rules, boundaries
-- `## Lessons Learned` — root cause analyses, patterns
-- `## Pending` — active items requiring attention
+| Root | Branch | Purpose |
+|------|--------|---------|
+| Root-1 (Topics) | `## People` | Key individuals, roles, preferences |
+| Root-1 (Topics) | `## Projects` | Active projects, status, links |
+| Root-1 (Topics) | `## Organizations` | Companies, teams, communities |
+| Root-2 (Technical) | `## Systems` | Installed tools, versions, configs |
+| Root-2 (Technical) | `## APIs` | API references, endpoints, auth |
+| Root-2 (Technical) | `## Languages` | Language-specific notes |
+| Root-2 (Technical) | `## Workflows` | CI/CD, deployment, automation |
+| Root-3 (Decisions) | `## Decision Log` | ADRs with date, alternative, rationale |
+| Root-3 (Decisions) | `## Constraints` | Non-negotiable rules, boundaries |
+| Root-3 (Decisions) | `## Lessons Learned` | Root cause analyses, patterns |
+| Root-3 (Decisions) | `## Pending` | Active items requiring attention |
 
 ---
 
@@ -54,10 +51,12 @@
 ## Cross-Reference Index
 
 _Entries in other roots that reference this root:_
-- (none yet)
+
+_No entries yet._
 
 _This root's `bkz:` references to other roots:_
-- (none yet)
+
+_No entries yet._
 
 ---
 
