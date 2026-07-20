@@ -286,7 +286,7 @@ Write fidelity is measured through the real `appendLeaf()` production writer, no
 Markdown files are the human-readable surface; the actual source of truth is an **append-only, hash-chained event log** (`.urdr/events.jsonl`). Every leaf gets a stable ID (a round-trippable `<!-- urdr:id:... -->` comment), `bkz:` references resolve to ID-backed edges instead of free text, and multi-file changes commit atomically through one transaction. Direct edits to the Markdown files are still fully supported — a reconciliation step diffs them back against the log and flags a genuine conflict (never silently auto-merges) if the same leaf changed both ways.
 
 - **Crash-safe.** Every write is fsync'd and atomically renamed; after a process is killed mid-publish, event-aware readers immediately see the correct logical generation instead of corrupt state or a lost leaf. The next mutation or an explicit reconcile/import repairs partially materialized root Markdown files; reads alone do not rewrite them.
-- **Concurrency-safe.** A separate lease-keeper subprocess renews the lock on its own timer, so a busy writer can't lose the lock to a false "stale" steal.
+- **Concurrency-safe.** A persistent lease-service process, reused across acquisitions for the caller's lifetime, renews each lock on its own timer, so a busy writer can't lose the lock to a false "stale" steal.
 - **Provenance (optional).** Any leaf may carry `creator`, `timestamp`, `source`, `confidence`, `verification_state`, `verifier`, and `validity_interval` metadata — fully additive, no migration needed for existing leaves.
 - **Forgetting.** `scripts/forget.mjs` tombstones a leaf, removes it from current and future state, and scrubs its bytes from every live managed generation snapshot, recovery copy, and registered export. It cannot redact the historical ledger in place without breaking the hash chain; this boundary is documented in `protocols/architecture.md`, not hidden.
 - **Memory compiler (`scripts/compiler.mjs`).** Turns lint findings into a concrete dry-run plan — deterministic branch-split proposals (keyword/Jaccard clustering, no ML), index diffs, and unambiguous reference repairs — bound to the current event-log head hash. Apply rejects a stale plan and any action not reproduced by a fresh trusted dry run, then publishes the approved actions as one atomic transaction.
@@ -307,12 +307,12 @@ The instant more than one writer touches the same memory, naive "read file → r
 node scripts/append.mjs ./my-memory root-2-technical.md "APIs" "**04.07.2026 — chose SQLite — ok**"
 ```
 
-- **Lease lock, not a bare advisory mkdir.** A separate lease-keeper subprocess acquires the lock and renews it on its own timer — a busy writer's blocked event loop can't cause a false "stale lock" steal, and a genuinely crashed writer's lock still gets reclaimed safely (token-checked, so a former owner can never delete a successor's lock).
+- **Lease lock, not a bare advisory mkdir.** A persistent lease-service process, reused across acquisitions for the caller's lifetime, acquires and renews each lock on its own timer — a busy writer's blocked event loop can't cause a false "stale lock" steal, and a genuinely crashed writer's lock still gets reclaimed safely (token-checked, so a former owner can never delete a successor's lock).
 - **Writes go through the event log**, not a bare file rewrite — a new leaf gets a stable ID and is immediately visible in committed state, no separate import step.
 - **Append-only** — inserts under the right `## branch` (replacing `_No entries yet._`), never overwrites sibling leaves.
 - **Atomic write** — fsync + temp file + durable rename (platform-specific: directory fsync on Linux/macOS, `MoveFileEx` with `MOVEFILE_WRITE_THROUGH` on Windows), so a half-written file is never observable and a crash mid-write always recovers cleanly.
 
-Verified: 15 concurrent writers → 15 leaves, zero loss, file integrity intact (macOS + Windows). Concurrent writers to different root files now serialize through the one event log — an intentional consequence of a single authoritative hash chain, not a regression; correctness (no lost leaf) is what's guaranteed, not parallel execution.
+Verified in CI on Linux, macOS, and Windows: 6 concurrent writers → 6 leaves, zero loss, file integrity intact. Concurrent writers to different root files now serialize through the one event log — an intentional consequence of a single authoritative hash chain, not a regression; correctness (no lost leaf) is what's guaranteed, not parallel execution.
 
 ## Health Lint (`scripts/lint.mjs`)
 
